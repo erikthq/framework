@@ -1,0 +1,21 @@
+{
+  "name": "tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "pnpm dlx --package=typescript tsc"
+  },
+  "dependencies": {
+    "deno-adapter": "workspace:*",
+    "framework": "workspace:*",
+    "node-adapter": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0"
+  }
+}

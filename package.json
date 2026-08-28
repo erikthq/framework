@@ -1,0 +1,15 @@
+{
+  "name": "framework-2",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter example dev",
+    "test": "pnpm --filter tests test",
+    "typecheck": "pnpm dlx --package=typescript tsc && pnpm -r typecheck"
+  }
+}
