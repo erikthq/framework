@@ -992,13 +992,18 @@ failure never blocks `pnpm dev` or `pnpm test`.
   `create-framework`.
 - **Scoped packages need `publishConfig.access: "public"`**, or the publish is
   rejected as a private package.
-- **Releases go through `.github/workflows/publish.yml`, triggered by an edit to
-  any `packages/*/package.json`.** The trigger is the file; the decision is the
-  version — the job asks the registry and publishes only what is missing, so
-  editing a description does nothing, a re-run does nothing, and a half-failed
-  run is fixed by running it again. Publishing by hand needs a second factor
-  (the account is `auth-and-writes`); CI uses an automation token in
-  `secrets.NPM_TOKEN`, which bypasses it.
+- **Releases go through `.github/workflows/publish.yml`, which runs on every
+  commit to main.** There is no path filter and no tag: the registry is the
+  decision. The job compares each package's version against what is published
+  and pushes only what is missing, so a release is "bump the version and merge",
+  every other commit is a no-op that still runs typecheck and the suite, and
+  re-running publishes nothing. Do not add a path filter back — a version bump
+  that arrives in a commit touching other files would then be missed.
+  Publishing by hand needs a second factor (the account is `auth-and-writes`);
+  CI uses a token in `secrets.NPM_TOKEN`. `@erikt` is an npm **org**, so that
+  token needs read/write on the *scope* — one limited to selected packages
+  cannot create a new one, and the registry reports that as a 404 on publish,
+  not a 403.
 
 [datastar]: https://data-star.dev
 

@@ -1,17 +1,20 @@
 name: publish
 
-# A package.json edit is the trigger, but a *version* edit is the decision: the
-# job compares each version against the registry and publishes only what is not
-# there yet. So editing a description is a no-op, a re-run is a no-op, and a run
-# that half-failed can simply be run again.
+# Runs on every commit to main, and the registry is the decision: each package's
+# version is compared against what is published, and only what is missing goes
+# up. Nothing else gates it — no path filter, no tag, no manual step — so a
+# release is exactly "bump the version and merge", and every other commit is a
+# no-op that still runs typecheck and the suite.
+#
+# That also makes the job idempotent: re-running it publishes nothing, and a run
+# that half-failed is fixed by running it again.
 on:
   push:
     branches: [main]
-    paths:
-      - 'packages/*/package.json'
   workflow_dispatch:
 
-# Two pushes in quick succession would otherwise race for the same version.
+# Every commit runs this, so pushes queue rather than overlap. Not cancelled in
+# flight: a half-finished publish is worse than a slow one.
 concurrency:
   group: publish
   cancel-in-progress: false
