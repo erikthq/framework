@@ -22,11 +22,12 @@ export type {
   DatastarStream,
   PatchElementsOptions,
   PatchMode,
+  ContextSignals,
   PatchSignalsOptions,
   Signals,
   StreamRender,
 } from "./plugins/datastar.ts";
-export { datastar, defineStream, readSignals } from "./plugins/datastar.ts";
+export { datastar, defineStream } from "./plugins/datastar.ts";
 
 export { DATASTAR_CLIENT, DATASTAR_VERSION } from "./plugins/datastar-client.ts";
 
@@ -57,10 +58,13 @@ export type {
 } from "./middleware/compress.ts";
 export { compress } from "./middleware/compress.ts";
 
-export type { EndpointRender, Layout, PageRender } from "./page.ts";
-export { defineEndpoint, defineLayout, definePage } from "./page.ts";
+export type { ErrorRender, Layout, RouteRender, RouteResult } from "./page.ts";
+export { defineErrorPage, defineLayout, defineRoute, useLayout } from "./page.ts";
 
 export type { HtmlInjection, InjectTarget, Plugin, RouteInfo, StartInfo } from "./plugin.ts";
+
+export type { AssetsOptions } from "./plugins/assets.ts";
+export { assets } from "./plugins/assets.ts";
 
 export type { BannerOptions } from "./plugins/banner.ts";
 export { banner } from "./plugins/banner.ts";
@@ -70,6 +74,24 @@ export { logger } from "./plugins/logger.ts";
 
 export type { ScriptAsset, ScriptsOptions } from "./plugins/scripts.ts";
 export { scripts, useScript } from "./plugins/scripts.ts";
+
+export type { Style, StylesOptions } from "./plugins/styles.ts";
+export { css, styles, useStyle } from "./plugins/styles.ts";
+
+export type {
+  Adapter,
+  AdapterConfig,
+  CreateStore,
+  DirectoryStore,
+  FetchHandler,
+  Serve,
+  ServeHandle,
+  ServeOptions,
+  StoreOptions,
+} from "./adapter.ts";
+
+export type { SiteConfig } from "./site.ts";
+export { createSite, defineConfig } from "./site.ts";
 
 export type {
   Route,

@@ -157,7 +157,7 @@ export function generateStore(
   options: GenerateStoreOptions = {},
 ): string {
   const base = options.base ?? './'
-  const specifier = options.specifier ?? 'framework'
+  const specifier = options.specifier ?? '@erikt/framework'
   const modules = options.modules ?? MODULE_EXTENSIONS
   const exportName = options.exportName ?? 'store'
 

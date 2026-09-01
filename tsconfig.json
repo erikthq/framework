@@ -1,39 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "compilerOptions": {
-    "target": "ES2023",
-
-    // Web standards only. "DOM" is the sole dependency-free source of types for
-    // fetch, Request/Response, URL, Web Streams, crypto.subtle, TextEncoder,
-    // AbortController, EventTarget, console, etc.
-    //
-    // "types": [] keeps Node's globals (process, Buffer, __dirname) and the
-    // node:* module declarations out, so a Node-only import in src/ fails to
-    // typecheck. That enforcement is the point — do not add "node" here.
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": [],
-
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true,
-
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "erasableSyntaxOnly": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-
-  // framework only. It is the sole package the Minimum Common API rule governs;
-  // every Node-hosted package has its own tsconfig with Node types. `exclude`
-  // cannot be used for this — TypeScript follows imports regardless of it.
-  "include": ["packages/framework/src/**/*.ts"]
+  "extends": "./packages/framework/tsconfig.base.json",
+  "include": [
+    "packages/framework/src/**/*.ts"
+  ]
 }

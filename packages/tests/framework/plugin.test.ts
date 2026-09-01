@@ -4,18 +4,31 @@ import assert from 'node:assert/strict'
 import {
   banner,
   createApp,
-  defineEndpoint,
   defineLayout,
-  definePage,
+  defineRoute,
   html,
   logger,
-} from 'framework'
+  useLayout,
+} from '@erikt/framework'
+import type { Layout, Plugin, RouteRender, StartInfo } from '@erikt/framework'
+
 // The framework enables banner, compress, datastar and logger by default. This
 // file asserts on the plugin list itself, so it opts out of all four and each
 // test measures only what it registers itself.
 const newApp = () => createApp({ banner: false, compress: false, datastar: false, logger: false })
 
-import type { Plugin, StartInfo } from 'framework'
+// Named only in the hooks, which hand back a Response of their own rather than
+// rendering; a route says its type by what it returns.
+const TEXT = 'text/plain; charset=utf-8'
+
+// A page that asks for the layout it is handed. Routes that skip useLayout stay
+// fragments, which several tests below rely on.
+const pageWith = (layout: Layout, render: RouteRender) =>
+  defineRoute(c => {
+    useLayout(c, layout)
+
+    return render(c)
+  })
 
 const ANSI = /\u001b\[[0-9;]*m/
 
@@ -35,7 +48,7 @@ test('setup can register routes', async () => {
   const plugin: Plugin = {
     name: 'health',
     setup(app) {
-      app.get('/health', c => c.json({ ok: true }))
+      app.get('/health', defineRoute(() => ({ ok: true })))
     },
   }
 
@@ -49,8 +62,8 @@ test('onStart receives runtime, routes and plugin names', async () => {
 
   const app = newApp()
     .plugin({ name: 'inspector', onStart: received => void (info = received) })
-    .get('/', c => c.text('root'))
-    .post('/items', c => c.text('made'))
+    .get('/', defineRoute(() => 'root'))
+    .post('/items', defineRoute(() => 'made'))
 
   await app.start({ url: 'http://example.test' })
 
@@ -68,7 +81,7 @@ test('fetch starts the app even when start is never called', async () => {
   let started = false
   const app = newApp()
     .plugin({ name: 'flag', onStart: () => void (started = true) })
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   assert.equal(started, false)
 
@@ -81,12 +94,15 @@ test('onRequest can short-circuit before any handler runs', async () => {
   let reached = false
 
   const app = newApp()
-    .plugin({ name: 'gate', onRequest: c => c.text('blocked', 403) })
-    .get('/', c => {
-      reached = true
+    .plugin({ name: 'gate', onRequest: c => c.body('blocked', { status: 403, type: TEXT }) })
+    .get(
+      '/',
+      defineRoute(() => {
+        reached = true
 
-      return c.text('secret')
-    })
+        return 'secret'
+      }),
+    )
 
   const response = await app.fetch(get())
 
@@ -99,7 +115,7 @@ test('onRequest that returns nothing lets the request through', async () => {
 
   const app = newApp()
     .plugin({ name: 'observer', onRequest: c => void seen.push(c.url.pathname) })
-    .get('/page', c => c.text('page'))
+    .get('/page', defineRoute(() => 'page'))
 
   assert.equal(await (await app.fetch(get('/page'))).text(), 'page')
   assert.deepEqual(seen, ['/page'])
@@ -115,9 +131,10 @@ test('onResponse can observe and replace the response', async () => {
     })
     .plugin({
       name: 'replacer',
-      onResponse: (c, response) => (response.status === 200 ? c.text('replaced') : response),
+      onResponse: (c, response) =>
+        response.status === 200 ? c.body('replaced', { type: TEXT }) : response,
     })
-    .get('/', c => c.text('original'))
+    .get('/', defineRoute(() => 'original'))
 
   const response = await app.fetch(get())
 
@@ -155,7 +172,7 @@ test('hooks run in plugin registration order', async () => {
   const app = newApp()
     .plugin({ name: 'first', onRequest: () => void order.push('first') })
     .plugin({ name: 'second', onRequest: () => void order.push('second') })
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   await app.fetch(get())
 
@@ -174,11 +191,14 @@ test('async hooks are awaited', async () => {
         order.push('hook')
       },
     })
-    .get('/', c => {
-      order.push('handler')
+    .get(
+      '/',
+      defineRoute(() => {
+        order.push('handler')
 
-      return c.text('ok')
-    })
+        return 'ok'
+      }),
+    )
 
   await app.fetch(get())
 
@@ -187,8 +207,8 @@ test('async hooks are awaited', async () => {
 
 test('routes exposes the registered routes', () => {
   const app = newApp()
-    .get('/', c => c.text('a'))
-    .all({ hostname: ':tenant.example.com', pathname: '/x' }, c => c.text('b'))
+    .get('/', defineRoute(() => 'a'))
+    .all({ hostname: ':tenant.example.com', pathname: '/x' }, defineRoute(() => 'b'))
 
   assert.deepEqual(app.routes, [
     { method: 'GET', pattern: '/' },
@@ -201,7 +221,7 @@ test('banner logs a box with the url, runtime and routes', async () => {
 
   const app = newApp()
     .plugin(banner({ color: false, log: message => output.push(message) }))
-    .get('/', c => c.text('root'))
+    .get('/', defineRoute(() => 'root'))
 
   await app.start({ url: 'http://localhost:4321' })
 
@@ -241,7 +261,7 @@ test('banner pads every line of the box to the same visible width', async () => 
 
   const app = newApp()
     .plugin(banner({ color: false, log: message => output.push(message) }))
-    .get('/a-very-long-route-pattern/:id', c => c.text('x'))
+    .get('/a-very-long-route-pattern/:id', defineRoute(() => 'x'))
 
   await app.start({ url: 'http://localhost:4321' })
 
@@ -255,7 +275,7 @@ test('banner keeps the box aligned with color on', async () => {
 
   const app = newApp()
     .plugin(banner({ color: true, log: message => output.push(message) }))
-    .get('/some/route/:id', c => c.text('x'))
+    .get('/some/route/:id', defineRoute(() => 'x'))
 
   await app.start({ url: 'http://localhost:4321' })
 
@@ -286,7 +306,7 @@ test('banner can omit the route list', async () => {
 
   const app = newApp()
     .plugin(banner({ color: false, routes: false, log: message => output.push(message) }))
-    .get('/hidden', c => c.text('x'))
+    .get('/hidden', defineRoute(() => 'x'))
 
   await app.start()
 
@@ -310,7 +330,14 @@ test('logger logs the method, path and status of every response', async () => {
   const output: string[] = []
   const app = newApp()
     .plugin(logger({ log: message => output.push(message) }))
-    .get('/users/:id', c => c.text(`user ${c.params.id ?? ''}`, 201))
+    .get(
+      '/users/:id',
+      defineRoute(c => {
+        c.status(201)
+
+        return `user ${c.params.id ?? ''}`
+      }),
+    )
 
   await app.fetch(new Request('http://localhost/users/7?full=1'))
   await app.fetch(new Request('http://localhost/missing', { method: 'POST' }))
@@ -323,7 +350,7 @@ test('logger logs the method, path and status of every response', async () => {
 test('logger reports the elapsed time in a header', async () => {
   const app = newApp()
     .plugin(logger({ log: () => {} }))
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   const response = await app.fetch(new Request('http://localhost/'))
 
@@ -336,7 +363,7 @@ test('logger can log without touching the response', async () => {
   const output: string[] = []
   const app = newApp()
     .plugin(logger({ header: false, log: message => output.push(message) }))
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   const response = await app.fetch(new Request('http://localhost/'))
 
@@ -359,7 +386,7 @@ test('logger adds its header to a response whose headers are immutable', async (
 test('logger keeps its header on a HEAD served by a GET route', async () => {
   const app = newApp()
     .plugin(logger({ log: () => {} }))
-    .get('/', c => c.text('body here'))
+    .get('/', defineRoute(() => 'body here'))
 
   const response = await app.fetch(new Request('http://localhost/', { method: 'HEAD' }))
 
@@ -389,9 +416,9 @@ test('injectHTML puts markup into the head and the body of a layout', async () =
     content => html`<html><head><title>t</title></head><body>${content}</body></html>`,
   )
 
-  const app = createApp({ banner: false, compress: false, datastar: false, logger: false, layout: shell })
+  const app = createApp({ banner: false, compress: false, datastar: false, logger: false })
     .plugin({ name: 'injector', injectHTML: () => ({ head: '<meta name="a">', body: '<i>b</i>' }) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', pageWith(shell, () => html`<h1>hi</h1>`))
 
   assert.equal(
     await (await app.fetch(get())).text(),
@@ -402,9 +429,9 @@ test('injectHTML puts markup into the head and the body of a layout', async () =
 test('injectHTML sees the context and runs per request', async () => {
   const shell = defineLayout(content => html`<html><head></head><body>${content}</body></html>`)
 
-  const app = createApp({ banner: false, compress: false, datastar: false, logger: false, layout: shell })
+  const app = createApp({ banner: false, compress: false, datastar: false, logger: false })
     .plugin({ name: 'injector', injectHTML: c => ({ head: `<meta content="${c.url.pathname}">` }) })
-    .get('/:slug', definePage(() => html`<h1>hi</h1>`))
+    .get('/:slug', pageWith(shell, () => html`<h1>hi</h1>`))
 
   assert.match(await (await app.fetch(get('/one'))).text(), /<meta content="\/one">/)
   assert.match(await (await app.fetch(get('/two'))).text(), /<meta content="\/two">/)
@@ -413,11 +440,11 @@ test('injectHTML sees the context and runs per request', async () => {
 test('every plugin that injects contributes, in registration order', async () => {
   const shell = defineLayout(content => html`<html><head></head><body>${content}</body></html>`)
 
-  const app = createApp({ banner: false, compress: false, datastar: false, logger: false, layout: shell })
+  const app = createApp({ banner: false, compress: false, datastar: false, logger: false })
     .plugin({ name: 'first', injectHTML: () => ({ head: '<meta name="1">' }) })
     .plugin({ name: 'quiet' })
     .plugin({ name: 'second', injectHTML: () => ({ head: '<meta name="2">' }) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', pageWith(shell, () => html`<h1>hi</h1>`))
 
   assert.match(await (await app.fetch(get())).text(), /<meta name="1"><meta name="2"><\/head>/)
 })
@@ -425,8 +452,12 @@ test('every plugin that injects contributes, in registration order', async () =>
 test('injectHTML is not applied to a handler that renders no markup', async () => {
   const app = newApp()
     .plugin({ name: 'injector', injectHTML: () => ({ head: '<meta name="a">' }) })
-    .get('/plain', c => c.html('<html><head></head><body>plain</body></html>'))
-    .get('/json', c => c.json({ ok: true }))
+    .get('/plain', c =>
+      c.body('<html><head></head><body>plain</body></html>', {
+        type: 'text/html; charset=utf-8',
+      }),
+    )
+    .get('/json', defineRoute(() => ({ ok: true })))
 
   assert.equal(
     await (await app.fetch(get('/plain'))).text(),
@@ -438,7 +469,7 @@ test('injectHTML is not applied to a handler that renders no markup', async () =
 test('a page with no layout still collects its injections', async () => {
   const app = newApp()
     .plugin({ name: 'injector', injectHTML: () => ({ head: '<meta name="a">' }) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', defineRoute(() => html`<h1>hi</h1>`))
 
   assert.equal(await (await app.fetch(get())).text(), '<h1>hi</h1><meta name="a">')
 })
@@ -446,7 +477,7 @@ test('a page with no layout still collects its injections', async () => {
 test('head lands before body when a fragment sends both to the end', async () => {
   const app = newApp()
     .plugin({ name: 'injector', injectHTML: () => ({ head: '<meta name="a">', body: '<i>b</i>' }) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', defineRoute(() => html`<h1>hi</h1>`))
 
   assert.equal(await (await app.fetch(get())).text(), '<h1>hi</h1><meta name="a"><i>b</i>')
 })
@@ -454,9 +485,9 @@ test('head lands before body when a fragment sends both to the end', async () =>
 test('injected markup with no closing tag to sit before is appended', async () => {
   const shell = defineLayout(content => html`<section>${content}</section>`)
 
-  const app = createApp({ banner: false, compress: false, datastar: false, logger: false, layout: shell })
+  const app = createApp({ banner: false, compress: false, datastar: false, logger: false })
     .plugin({ name: 'injector', injectHTML: () => ({ head: '<meta name="a">' }) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', pageWith(shell, () => html`<h1>hi</h1>`))
 
   assert.equal(
     await (await app.fetch(get())).text(),
@@ -468,10 +499,10 @@ test('injectHTML is told whether it is filling a document or a fragment', async 
   const seen: string[] = []
   const shell = defineLayout(content => html`<html><head></head><body>${content}</body></html>`)
 
-  const app = createApp({ banner: false, compress: false, datastar: false, logger: false, layout: shell })
+  const app = createApp({ banner: false, compress: false, datastar: false, logger: false })
     .plugin({ name: 'watcher', injectHTML: (_c, target) => void seen.push(target) })
-    .get('/page', definePage(() => html`<h1>hi</h1>`))
-    .get('/panel', defineEndpoint(() => html`<div>hi</div>`))
+    .get('/page', pageWith(shell, () => html`<h1>hi</h1>`))
+    .get('/panel', defineRoute(() => html`<div>hi</div>`))
 
   await app.fetch(get('/page'))
   await app.fetch(get('/panel'))
@@ -484,7 +515,7 @@ test('a layout-less page counts as a fragment', async () => {
 
   const app = newApp()
     .plugin({ name: 'watcher', injectHTML: (_c, target) => void seen.push(target) })
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', defineRoute(() => html`<h1>hi</h1>`))
 
   await app.fetch(get())
 

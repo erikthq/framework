@@ -1,11 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { compress, createApp } from 'framework'
+import { compress, createApp, defineRoute } from '@erikt/framework'
+
 // The framework enables banner, compress and logger by default. Unit tests opt
 // out so each one measures only what it registers itself.
 const newApp = () => createApp({ banner: false, compress: false, logger: false })
 
+// Named only where the handler builds its own Response to carry a header the
+// test is about; a route says its type by what it returns.
+const TEXT = 'text/plain; charset=utf-8'
 
 const BIG = 'hello world '.repeat(500)
 
@@ -23,7 +27,7 @@ async function inflate(response: Response, format: 'gzip' | 'deflate'): Promise<
 test('compresses a text response with gzip', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -34,7 +38,7 @@ test('compresses a text response with gzip', async () => {
 test('the compressed body is actually smaller', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const compressed = await (await app.fetch(get({ 'accept-encoding': 'gzip' }))).arrayBuffer()
 
@@ -44,7 +48,7 @@ test('the compressed body is actually smaller', async () => {
 test('uses deflate when that is all the client accepts', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'deflate' }))
 
@@ -55,7 +59,7 @@ test('uses deflate when that is all the client accepts', async () => {
 test('prefers gzip when the client accepts both', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'deflate, gzip' }))
 
@@ -65,7 +69,7 @@ test('prefers gzip when the client accepts both', async () => {
 test('honours the encoding preference order given in options', async () => {
   const app = newApp()
     .use(compress({ encodings: ['deflate', 'gzip'] }))
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'deflate, gzip' }))
 
@@ -75,7 +79,7 @@ test('honours the encoding preference order given in options', async () => {
 test('respects q-values when choosing an encoding', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip;q=0.1, deflate;q=0.9' }))
 
@@ -85,7 +89,7 @@ test('respects q-values when choosing an encoding', async () => {
 test('treats q=0 as a refusal', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip;q=0, deflate;q=0' }))
 
@@ -96,7 +100,7 @@ test('treats q=0 as a refusal', async () => {
 test('matches a wildcard accept-encoding', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get({ 'accept-encoding': '*' }))
 
@@ -106,7 +110,7 @@ test('matches a wildcard accept-encoding', async () => {
 test('does not compress when the client sends no accept-encoding', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(get())
 
@@ -117,7 +121,7 @@ test('does not compress when the client sends no accept-encoding', async () => {
 test('skips bodies below the threshold', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text('tiny'))
+    .get('/', defineRoute(() => 'tiny'))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -128,7 +132,7 @@ test('skips bodies below the threshold', async () => {
 test('compresses a small body when the threshold is lowered', async () => {
   const app = newApp()
     .use(compress({ threshold: 0 }))
-    .get('/', c => c.text('tiny'))
+    .get('/', defineRoute(() => 'tiny'))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -160,7 +164,7 @@ test('compresses a streamed body of unknown length', async () => {
 test('compresses json', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.json({ items: Array.from({ length: 500 }, (_, i) => i) }))
+    .get('/', defineRoute(() => ({ items: Array.from({ length: 500 }, (_, i) => i) })))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -195,7 +199,7 @@ test('a custom filter decides instead of the content type', async () => {
   const app = newApp()
     .use(compress({ filter: c => c.url.pathname.startsWith('/yes') }))
     .get('/yes', c => c.body(BIG, { headers: { 'content-type': 'image/png' } }))
-    .get('/no', c => c.text(BIG))
+    .get('/no', defineRoute(() => BIG))
 
   assert.equal(
     (await app.fetch(get({ 'accept-encoding': 'gzip' }, '/yes'))).headers.get('content-encoding'),
@@ -220,7 +224,7 @@ test('does not double-compress an already encoded response', async () => {
 test('respects cache-control: no-transform', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG, { headers: { 'cache-control': 'public, no-transform' } }))
+    .get('/', c => c.body(BIG, { type: TEXT, headers: { 'cache-control': 'public, no-transform' } }))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -241,7 +245,7 @@ test('leaves a 304 alone', async () => {
 test('sets Vary: Accept-Encoding on compressible responses', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const compressed = await app.fetch(get({ 'accept-encoding': 'gzip' }))
   const plain = await app.fetch(get())
@@ -253,7 +257,7 @@ test('sets Vary: Accept-Encoding on compressible responses', async () => {
 test('appends to an existing Vary header without clobbering it', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG, { headers: { vary: 'Origin' } }))
+    .get('/', c => c.body(BIG, { type: TEXT, headers: { vary: 'Origin' } }))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -263,7 +267,7 @@ test('appends to an existing Vary header without clobbering it', async () => {
 test('does not duplicate Vary when it already lists Accept-Encoding', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG, { headers: { vary: 'accept-encoding' } }))
+    .get('/', c => c.body(BIG, { type: TEXT, headers: { vary: 'accept-encoding' } }))
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -274,7 +278,7 @@ test('drops the stale content-length after compressing', async () => {
   const app = newApp()
     .use(compress())
     .get('/', c =>
-      c.text(BIG, { headers: { 'content-length': String(BIG.length) } }),
+      c.body(BIG, { type: TEXT, headers: { 'content-length': String(BIG.length) } }),
     )
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
@@ -286,11 +290,15 @@ test('drops the stale content-length after compressing', async () => {
 test('preserves status and other headers', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => {
-      c.header('x-custom', 'kept')
+    .get(
+      '/',
+      defineRoute(c => {
+        c.header('x-custom', 'kept')
+        c.status(201)
 
-      return c.text(BIG, 201)
-    })
+        return BIG
+      }),
+    )
 
   const response = await app.fetch(get({ 'accept-encoding': 'gzip' }))
 
@@ -302,7 +310,7 @@ test('preserves status and other headers', async () => {
 test('leaves a HEAD response without a body alone', async () => {
   const app = newApp()
     .use(compress())
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(new Request('http://localhost/', { method: 'HEAD' }))
 

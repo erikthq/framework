@@ -1,3 +1,3 @@
-import type { Context } from 'framework'
+import { defineRoute } from '@erikt/framework'
 
-export const GET = (c: Context) => c.text('home')
+export const GET = defineRoute(() => 'home')

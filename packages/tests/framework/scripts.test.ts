@@ -1,19 +1,24 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 
 import {
   createApp,
-  defineEndpoint,
+  css,
   defineLayout,
-  definePage,
+  defineRoute,
   defineStream,
   html,
   scripts,
+  useLayout,
   staticStore,
+  stripTypes,
+  styles,
   useScript,
+  useStyle,
   withRead,
-} from 'framework'
-import type { AppOptions, Context, FileStore, StaticFiles } from 'framework'
+} from '@erikt/framework'
+import type { AppOptions, Context, FileStore, StaticFiles } from '@erikt/framework'
 
 // The framework enables banner, compress, datastar and logger by default. Unit
 // tests opt out of the three that write to stdout or re-encode a body.
@@ -49,15 +54,19 @@ function sourceStore(files: Record<string, string>, name = 'sources'): FileStore
 
 const COUNTER = 'export const start = (count: number): number => count + 1\n'
 
+// A page asks for a layout, which is what makes its response a document — and
+// a document is what carries the import map. Endpoint tests build their routes
+// by hand so they stay fragments.
 const page = (...names: readonly string[]) =>
-  definePage((c: Context) => {
+  defineRoute((c: Context) => {
+    useLayout(c, shell)
     useScript(c, ...names)
 
     return html`<h1>hi</h1>`
   })
 
 const appWith = (files: Record<string, string>, uses: readonly string[] = ['counter']) =>
-  newApp({ layout: shell })
+  newApp()
     .plugin(scripts({ store: sourceStore(files) }))
     .get('/', page(...uses))
 
@@ -79,9 +88,9 @@ test('a page gets only the script it asks for', async () => {
 })
 
 test('a page that asks for nothing gets nothing', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
-    .get('/', definePage(() => html`<h1>hi</h1>`))
+    .get('/', defineRoute(() => html`<h1>hi</h1>`))
 
   const body = await (await app.fetch(get())).text()
 
@@ -90,7 +99,7 @@ test('a page that asks for nothing gets nothing', async () => {
 })
 
 test('two pages get different scripts', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({
@@ -135,7 +144,7 @@ test('the layout can ask, so a script lands on every page', async () => {
     return html`<html><head></head><body>${content}</body></html>`
   })
 
-  const app = newApp({ layout: everywhere })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({
@@ -144,8 +153,23 @@ test('the layout can ask, so a script lands on every page', async () => {
         }),
       }),
     )
-    .get('/bare', definePage(() => html`<h1>bare</h1>`))
-    .get('/rich', page('page'))
+    .get(
+      '/bare',
+      defineRoute(c => {
+        useLayout(c, everywhere)
+
+        return html`<h1>bare</h1>`
+      }),
+    )
+    .get(
+      '/rich',
+      defineRoute(c => {
+        useLayout(c, everywhere)
+        useScript(c, 'page')
+
+        return html`<h1>rich</h1>`
+      }),
+    )
 
   assert.equal((await tags(app, '/bare')).length, 1)
   assert.equal((await tags(app, '/rich')).length, 2)
@@ -161,20 +185,53 @@ test('a name may carry its extension or a leading slash', async () => {
   assert.equal((await tags(app)).length, 1)
 })
 
-test('an unknown name throws, naming what there is', async () => {
-  const app = newApp({ layout: shell })
+test('an unknown name still renders the page, with a tag that 404s', async () => {
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
     .get('/', page('countr'))
     .onError(error => new Response(String(error), { status: 500 }))
 
   const response = await app.fetch(get())
 
-  assert.equal(response.status, 500)
-  assert.match(await response.text(), /No script named "countr" — known scripts are "counter"/)
+  assert.equal(response.status, 200)
+  assert.match(await response.text(), /<h1>hi<\/h1>/)
+})
+
+test('the tag for a missing script points at the file it could not find', async () => {
+  const app = newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
+    .get('/', page('countr'))
+
+  const found = await tags(app)
+
+  // Unhashed, because there was nothing to hash — which is also why it cannot
+  // collide with a served asset.
+  assert.deepEqual(found, ['/scripts/countr.js'])
+  assert.equal((await app.fetch(get('/scripts/countr.js'))).status, 404)
+})
+
+test('a missing script does not stop the ones that are there', async () => {
+  const app = newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
+    .get('/', page('countr', 'counter'))
+
+  const found = await tags(app)
+
+  assert.equal(found.length, 2)
+  assert.equal(found[0], '/scripts/countr.js')
+  assert.match(found[1] ?? '', /^\/scripts\/counter\.[0-9a-f]{8}\.js$/)
+})
+
+test('the missing tag follows a configured base', async () => {
+  const app = newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }), base: 'assets/js' }))
+    .get('/', page('countr'))
+
+  assert.deepEqual(await tags(app), ['/assets/js/countr.js'])
 })
 
 test('useScript without the plugin says the plugin is missing', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .get('/', page('counter'))
     .onError(error => new Response(String(error), { status: 500 }))
 
@@ -218,7 +275,7 @@ test('a javascript file is served unchanged', async () => {
 })
 
 test('files outside the folder and of other extensions are not scripts', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({
@@ -228,14 +285,19 @@ test('files outside the folder and of other extensions are not scripts', async (
         }),
       }),
     )
-    .get('/', page('notes'))
-    .onError(error => new Response(String(error), { status: 500 }))
+    .get('/', page('notes', 'index', 'counter'))
 
-  assert.match(await (await app.fetch(get())).text(), /known scripts are "counter"/)
+  // Only counter.ts was registered, so it is the only name that resolves to a
+  // hashed, served URL. The other two are markdown and a route file.
+  const found = await tags(app)
+
+  assert.equal(found[0], '/scripts/notes.js')
+  assert.equal(found[1], '/scripts/index.js')
+  assert.match(found[2] ?? '', /^\/scripts\/counter\.[0-9a-f]{8}\.js$/)
 })
 
 test('the folder and the url prefix are configurable', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({ 'client/counter.ts': COUNTER }),
@@ -252,7 +314,7 @@ test('the folder and the url prefix are configurable', async () => {
 })
 
 test('two scripts plugins each resolve and inject their own', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/app.ts': 'export const a: number = 1\n' }) }))
     .plugin(
       scripts({
@@ -270,15 +332,15 @@ test('two scripts plugins each resolve and inject their own', async () => {
 })
 
 test('a route that serves no layout is left alone', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
-    .get('/fragment', c => c.html('<p>bare</p>'))
+    .get('/fragment', c => c.body('<p>bare</p>', { type: 'text/html; charset=utf-8' }))
 
   assert.equal(await (await app.fetch(get('/fragment'))).text(), '<p>bare</p>')
 })
 
 test('the 404 page can ask for a script too', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/counter.ts': COUNTER }) }))
     .notFound(page('counter'))
 
@@ -291,13 +353,13 @@ test('a store with no read method says so by name', async () => {
     list: async () => [{ path: 'scripts/counter.ts' }],
   }
 
-  const app = newApp({ layout: shell }).plugin(scripts({ store: listingOnly }))
+  const app = newApp().plugin(scripts({ store: listingOnly }))
 
   await assert.rejects(() => app.start(), /"listing-only" cannot read files/)
 })
 
 test('a file that lists but does not read says so by path', async () => {
-  const app = newApp({ layout: shell }).plugin(
+  const app = newApp().plugin(
     scripts({ store: staticStore({ 'scripts/counter.ts': {} }, { name: 'no-bytes' }) }),
   )
 
@@ -305,31 +367,34 @@ test('a file that lists but does not read says so by path', async () => {
 })
 
 test('unstrippable typescript fails at startup, naming the file', async () => {
-  const app = newApp({ layout: shell }).plugin(
+  const app = newApp().plugin(
     scripts({ store: sourceStore({ 'scripts/bad.ts': 'enum Colour { Red }\n' }) }),
   )
 
   await assert.rejects(() => app.start(), /scripts\/bad\.ts/)
 })
 
-test('an empty folder says so when a page asks for anything', async () => {
-  const app = newApp({ layout: shell })
+test('an empty folder still renders the page', async () => {
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({}) }))
     .get('/', page('counter'))
-    .onError(error => new Response(String(error), { status: 500 }))
 
-  assert.match(await (await app.fetch(get())).text(), /no scripts were found/)
+  const response = await app.fetch(get())
+
+  assert.equal(response.status, 200)
+  assert.match(await response.text(), /<h1>hi<\/h1>/)
+  assert.equal((await app.fetch(get('/scripts/counter.js'))).status, 404)
 })
 
 const endpoint = (...names: readonly string[]) =>
-  defineEndpoint((c: Context) => {
+  defineRoute((c: Context) => {
     useScript(c, ...names)
 
     return html`<div id="panel">open</div>`
   })
 
 test('an endpoint carries the script it asks for in its fragment', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get('/panel', endpoint('panel'))
 
@@ -337,20 +402,23 @@ test('an endpoint carries the script it asks for in its fragment', async () => {
 
   assert.match(
     body,
-    /^<div id="panel">open<\/div><script type="module" src="\/scripts\/panel\.[0-9a-f]{8}\.js"><\/script>$/,
+    /^<div id="panel">open<\/div><script type="module" id="asset-scripts-panel-[0-9a-f]{8}-js" src="\/scripts\/panel\.[0-9a-f]{8}\.js"><\/script>$/,
   )
 })
 
 test('an endpoint that asks for nothing carries nothing', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
-    .get('/panel', defineEndpoint(() => html`<div id="panel">open</div>`))
+    .get('/panel', defineRoute(c => {
+
+      return html`<div id="panel">open</div>`
+    }))
 
   assert.equal(await (await app.fetch(get('/panel'))).text(), '<div id="panel">open</div>')
 })
 
 test('the script an endpoint carries is served at that url', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get('/panel', endpoint('panel'))
 
@@ -360,7 +428,7 @@ test('the script an endpoint carries is served at that url', async () => {
 })
 
 test('an endpoint gets no layout, so its fragment stays a fragment', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get('/panel', endpoint('panel'))
 
@@ -370,7 +438,7 @@ test('an endpoint gets no layout, so its fragment stays a fragment', async () =>
 })
 
 test('a page and an endpoint asking for the same script do not share a request', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({
@@ -386,19 +454,22 @@ test('a page and an endpoint asking for the same script do not share a request',
   assert.match((await tags(app, '/panel'))[0] ?? '', /^\/scripts\/panel\./)
 })
 
-test('an unknown name in an endpoint throws too', async () => {
-  const app = newApp({ layout: shell })
+test('an unknown name in a fragment carries the same 404 tag', async () => {
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get('/panel', endpoint('pannel'))
-    .onError(error => new Response(String(error), { status: 500 }))
 
-  assert.match(await (await app.fetch(get('/panel'))).text(), /No script named "pannel"/)
+  const response = await app.fetch(get('/panel'))
+
+  assert.equal(response.status, 200)
+  assert.match(await response.text(), /src="\/scripts\/pannel\.js"/)
 })
 
-const HEAD_PATCH = /event: datastar-patch-elements\ndata: selector head\ndata: mode append\ndata: elements <script type="module" src="(\/scripts\/[^"]+)"><\/script>\n\n/
+const HEAD_PATCH =
+  /event: datastar-patch-elements\ndata: selector head\ndata: mode append\ndata: elements <script type="module" id="(asset-[a-z0-9-]+)" src="(\/scripts\/[^"]+)"><\/script>\n\n/
 
 test('a stream appends the script it asks for to the live head', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get(
       '/panel',
@@ -412,11 +483,11 @@ test('a stream appends the script it asks for to the live head', async () => {
   const body = await (await app.fetch(get('/panel'))).text()
 
   assert.match(body, HEAD_PATCH)
-  assert.match(HEAD_PATCH.exec(body)?.[1] ?? '', /^\/scripts\/panel\.[0-9a-f]{8}\.js$/)
+  assert.match(HEAD_PATCH.exec(body)?.[2] ?? '', /^\/scripts\/panel\.[0-9a-f]{8}\.js$/)
 })
 
 test('the head patch follows the markup it came with', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get(
       '/panel',
@@ -433,7 +504,7 @@ test('the head patch follows the markup it came with', async () => {
 })
 
 test('a stream that sends nothing still delivers the script', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get(
       '/panel',
@@ -446,7 +517,7 @@ test('a stream that sends nothing still delivers the script', async () => {
 })
 
 test('a stream sends each script once, however many events follow', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get(
       '/panel',
@@ -465,7 +536,7 @@ test('a stream sends each script once, however many events follow', async () => 
 })
 
 test('a script asked for later in a stream arrives later', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(
       scripts({
         store: sourceStore({
@@ -495,7 +566,7 @@ test('a script asked for later in a stream arrives later', async () => {
 })
 
 test('a stream asking for nothing sends no head patch', async () => {
-  const app = newApp({ layout: shell })
+  const app = newApp()
     .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
     .get('/panel', defineStream(stream => stream.patchSignals({ a: 1 })))
 
@@ -503,7 +574,7 @@ test('a stream asking for nothing sends no head patch', async () => {
 })
 
 test('a stream without the scripts plugin aborts rather than silently skipping', async () => {
-  const app = newApp({ layout: shell }).get(
+  const app = newApp().get(
     '/panel',
     defineStream((_stream, c) => useScript(c, 'panel')),
   )
@@ -511,4 +582,100 @@ test('a stream without the scripts plugin aborts rather than silently skipping',
   const response = await app.fetch(get('/panel'))
 
   await assert.rejects(() => response.text(), /useScript needs the scripts plugin/)
+})
+
+test('scripts and styles share one head queue, in the order asked', async () => {
+  const sheet = css`
+    .mixed {
+      color: red;
+    }
+  `
+
+  const app = newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
+    .plugin(styles())
+    .get(
+      '/',
+      defineRoute(c => {
+        useStyle(c, sheet)
+        useScript(c, 'panel')
+
+        return html`<h1>hi</h1>`
+      }),
+    )
+
+  const body = await (await app.fetch(get())).text()
+  const head = body.slice(0, body.indexOf('</head>'))
+
+  assert.ok(head.indexOf('<link') < head.indexOf('<script'))
+  assert.match(head, new RegExp(`href="/styles/${sheet.hash}\\.css"`))
+  assert.match(head, /src="\/scripts\/panel\./)
+})
+
+const htmlUrl = async (app: ReturnType<typeof newApp>) => {
+  const body = await (await app.fetch(get())).text()
+  const map = /<script type="importmap">(.*?)<\/script>/.exec(body)?.[1] ?? ''
+
+  return (
+    (JSON.parse(map) as { imports: Record<string, string> }).imports['@erikt/framework/html'] ?? ''
+  )
+}
+
+const IMPORTER = "import { html } from '@erikt/framework/html'\nexport const tag: string = html`<p></p>`\n"
+
+const withHtml = () =>
+  newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': IMPORTER }) }))
+    .get('/', page('panel'))
+
+test('the html helper is served for browser code to import', async () => {
+  const app = withHtml()
+  const url = await htmlUrl(app)
+
+  assert.match(url, /^\/framework\/html\.[0-9a-f]{8}\.js$/)
+
+  const served = await app.fetch(get(url))
+
+  assert.equal(served.status, 200)
+  assert.equal(served.headers.get('content-type'), 'text/javascript; charset=utf-8')
+  assert.equal(served.headers.get('cache-control'), 'public, max-age=31536000, immutable')
+  assert.match(await served.text(), /export function html/)
+})
+
+test('what is served is derived from html.ts, not hand-written beside it', async () => {
+  // The one module that runs on both sides is carried as a string, because
+  // `framework` cannot read its own files. This re-derives it from the real
+  // file and fails if the two have drifted.
+  const app = withHtml()
+  const served = await (await app.fetch(get(await htmlUrl(app)))).text()
+
+  const source = await readFile(
+    new URL('../../framework/src/helpers/html.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.equal(served, stripTypes(source, { fileName: 'html.ts' }))
+})
+
+test('the served build escapes exactly as the one routes use', async () => {
+  const app = withHtml()
+  const served = await (await app.fetch(get(await htmlUrl(app)))).text()
+
+  const client = (await import(`data:text/javascript,${encodeURIComponent(served)}`)) as {
+    html: typeof html
+  }
+
+  for (const value of ['<img onerror=alert(1)>', 'a & b', '"quoted"', "it's", '<b>ok</b>']) {
+    assert.equal(String(client.html`<p>${value}</p>`), String(html`<p>${value}</p>`))
+  }
+})
+
+test('a page whose scripts do not import it gets no map', async () => {
+  const app = newApp()
+    .plugin(scripts({ store: sourceStore({ 'scripts/panel.ts': COUNTER }) }))
+    .get('/', page('panel'))
+
+  // The helper is opt-in like everything else: nothing imports it, so no entry
+  // is claimed and the page carries no import map at all.
+  assert.doesNotMatch(await (await app.fetch(get())).text(), /importmap/)
 })

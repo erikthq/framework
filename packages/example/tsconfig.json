@@ -1,31 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  // A Node-hosted app: it imports node-adapter, so it needs Node types. The
-  // Minimum Common API rule applies to framework, not here.
-  "compilerOptions": {
-    "target": "ES2023",
-    "lib": ["ES2023"],
-    "types": ["node"],
-
-    "module": "nodenext",
-    "moduleResolution": "nodenext",
-
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true,
-
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "erasableSyntaxOnly": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src/**/*.ts"],
-  // Browser code, checked against DOM by tsconfig.scripts.json instead.
-  "exclude": ["src/scripts"]
+  "extends": "@erikt/framework-node/tsconfig.base.json",
+  "include": [
+    "src/**/*.ts",
+    "framework.config.ts"
+  ],
+  "exclude": [
+    "src/scripts"
+  ]
 }

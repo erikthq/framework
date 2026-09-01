@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { generateStore, listFiles, staticStore, withRead } from 'framework'
-import type { FileStore } from 'framework'
+import { generateStore, listFiles, staticStore, withRead } from '@erikt/framework'
+import type { FileStore } from '@erikt/framework'
 
 const naive = (paths: readonly string[]): FileStore => ({
   name: 'naive',
@@ -125,7 +125,7 @@ test('a generated store imports the modules and lists the rest', () => {
     name: 'baked',
   })
 
-  assert.match(source, /import \{ staticStore \} from "framework"/)
+  assert.match(source, /import \{ staticStore \} from "@erikt\/framework"/)
   assert.match(source, /"index\.ts": \{ import: \(\) => import\("\.\/routes\/index\.ts"\) \}/)
   assert.match(source, /"logo\.svg": \{ size: 9 \}/)
   assert.match(source, /\{ name: "baked" \}/)

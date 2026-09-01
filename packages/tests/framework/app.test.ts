@@ -1,16 +1,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createApp } from 'framework'
+import { createApp, defineRoute, html } from '@erikt/framework'
+
 // The framework enables banner, compress and logger by default. Unit tests opt
 // out so each one measures only what it registers itself.
 const newApp = () => createApp({ banner: false, compress: false, logger: false })
 
+// Only the handlers that must hand back a Response of their own still name a
+// content type; a route says it by what it returns.
+const TEXT = 'text/plain; charset=utf-8'
+const JSON_TYPE = 'application/json; charset=utf-8'
 
 const get = (path: string) => new Request(`http://localhost${path}`)
 
 test('routes a request to a handler', async () => {
-  const app = newApp().get('/', c => c.text('hello'))
+  const app = newApp().get('/', defineRoute(() => 'hello'))
   const response = await app.fetch(get('/'))
 
   assert.equal(response.status, 200)
@@ -20,8 +25,15 @@ test('routes a request to a handler', async () => {
 
 test('routes by method', async () => {
   const app = newApp()
-    .get('/items', c => c.text('list'))
-    .post('/items', c => c.text('created', 201))
+    .get('/items', defineRoute(() => 'list'))
+    .post(
+      '/items',
+      defineRoute(c => {
+        c.status(201)
+
+        return 'created'
+      }),
+    )
 
   assert.equal(await (await app.fetch(get('/items'))).text(), 'list')
 
@@ -32,24 +44,34 @@ test('routes by method', async () => {
 })
 
 test('exposes path params on the context', async () => {
-  const app = newApp().get('/users/:id', c => c.text(c.params.id ?? ''))
+  const app = newApp().get('/users/:id', defineRoute(c => c.params.id ?? ''))
 
   assert.equal(await (await app.fetch(get('/users/42'))).text(), '42')
 })
 
-test('json sets the content type and serialises the body', async () => {
-  const app = newApp().get('/', c => c.json({ ok: true }))
+test('an object return sets the json content type and serialises the body', async () => {
+  const app = newApp().get('/', defineRoute(() => ({ ok: true })))
   const response = await app.fetch(get('/'))
 
   assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8')
   assert.deepEqual(await response.json(), { ok: true })
 })
 
-test('html sets the content type', async () => {
-  const app = newApp().get('/', c => c.html('<h1>hi</h1>'))
+test('an html`` return sets the html content type', async () => {
+  const app = newApp().get('/', defineRoute(() => html`<h1>hi</h1>`))
   const response = await app.fetch(get('/'))
 
   assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8')
+  assert.equal(await response.text(), '<h1>hi</h1>')
+})
+
+test('a plain string return sets the text content type', async () => {
+  // The string that skipped `html` is the one whose interpolations were never
+  // escaped, so it is answered as text rather than as markup to execute.
+  const app = newApp().get('/', defineRoute(() => '<h1>hi</h1>'))
+  const response = await app.fetch(get('/'))
+
+  assert.equal(response.headers.get('content-type'), 'text/plain; charset=utf-8')
   assert.equal(await response.text(), '<h1>hi</h1>')
 })
 
@@ -62,12 +84,15 @@ test('redirect sets location and status', async () => {
 })
 
 test('header and status accumulate onto the response', async () => {
-  const app = newApp().get('/', c => {
-    c.header('x-powered-by', 'framework')
-    c.status(418)
+  const app = newApp().get(
+    '/',
+    defineRoute(c => {
+      c.header('x-powered-by', 'framework')
+      c.status(418)
 
-    return c.text('teapot')
-  })
+      return 'teapot'
+    }),
+  )
   const response = await app.fetch(get('/'))
 
   assert.equal(response.status, 418)
@@ -75,13 +100,19 @@ test('header and status accumulate onto the response', async () => {
 })
 
 test('returns 404 when no route matches', async () => {
-  const response = await newApp().get('/', c => c.text('root')).fetch(get('/missing'))
+  const response = await newApp().get('/', defineRoute(() => 'root')).fetch(get('/missing'))
 
   assert.equal(response.status, 404)
 })
 
 test('a custom notFound handler replaces the default', async () => {
-  const app = newApp().notFound(c => c.json({ missing: c.url.pathname }, 404))
+  const app = newApp().notFound(
+    defineRoute(c => {
+      c.status(404)
+
+      return { missing: c.url.pathname }
+    }),
+  )
   const response = await app.fetch(get('/nope'))
 
   assert.equal(response.status, 404)
@@ -89,7 +120,7 @@ test('a custom notFound handler replaces the default', async () => {
 })
 
 test('returns 405 with an Allow header when the path matches but the method does not', async () => {
-  const app = newApp().get('/items', c => c.text('list'))
+  const app = newApp().get('/items', defineRoute(() => 'list'))
   const response = await app.fetch(new Request('http://localhost/items', { method: 'DELETE' }))
 
   assert.equal(response.status, 405)
@@ -97,7 +128,7 @@ test('returns 405 with an Allow header when the path matches but the method does
 })
 
 test('all() matches any method', async () => {
-  const app = newApp().all('/any', c => c.text(c.req.method))
+  const app = newApp().all('/any', defineRoute(c => c.req.method))
 
   assert.equal(await (await app.fetch(new Request('http://localhost/any', { method: 'PUT' }))).text(), 'PUT')
 })
@@ -115,11 +146,14 @@ test('middleware wraps the handler', async () => {
 
       return response
     })
-    .get('/', c => {
-      order.push('handler')
+    .get(
+      '/',
+      defineRoute(() => {
+        order.push('handler')
 
-      return c.text('ok')
-    })
+        return 'ok'
+      }),
+    )
 
   const response = await app.fetch(get('/'))
 
@@ -141,7 +175,7 @@ test('middleware runs in registration order', async () => {
 
       return next()
     })
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   await app.fetch(get('/'))
 
@@ -152,12 +186,15 @@ test('middleware can short-circuit without calling next', async () => {
   let reached = false
 
   const app = newApp()
-    .use(c => c.text('denied', 401))
-    .get('/', c => {
-      reached = true
+    .use(c => c.body('denied', { status: 401, type: TEXT }))
+    .get(
+      '/',
+      defineRoute(() => {
+        reached = true
 
-      return c.text('secret')
-    })
+        return 'secret'
+      }),
+    )
 
   const response = await app.fetch(get('/'))
 
@@ -174,8 +211,8 @@ test('scoped middleware only runs on matching paths', async () => {
 
       return next()
     })
-    .get('/admin/users', c => c.text('admin'))
-    .get('/public', c => c.text('public'))
+    .get('/admin/users', defineRoute(() => 'admin'))
+    .get('/public', defineRoute(() => 'public'))
 
   await app.fetch(get('/public'))
   assert.deepEqual(seen, [])
@@ -191,7 +228,7 @@ test('context state passes from middleware to handler', async () => {
 
       return next()
     })
-    .get('/me', c => c.json(c.get('user')))
+    .get('/me', defineRoute(c => c.get('user') as { id: number }))
 
   assert.deepEqual(await (await app.fetch(get('/me'))).json(), { id: 7 })
 })
@@ -207,7 +244,9 @@ test('a thrown error becomes a 500', async () => {
 
 test('onError handles thrown errors', async () => {
   const app = newApp()
-    .onError((error, c) => c.json({ error: (error as Error).message }, 500))
+    .onError((error, c) =>
+      c.body(JSON.stringify({ error: (error as Error).message }), { status: 500, type: JSON_TYPE }),
+    )
     .get('/', () => {
       throw new Error('boom')
     })
@@ -217,17 +256,17 @@ test('onError handles thrown errors', async () => {
 
 test('onError catches errors thrown in middleware', async () => {
   const app = newApp()
-    .onError((error, c) => c.text((error as Error).message, 500))
+    .onError((error, c) => c.body((error as Error).message, { status: 500, type: TEXT }))
     .use(() => {
       throw new Error('middleware failed')
     })
-    .get('/', c => c.text('ok'))
+    .get('/', defineRoute(() => 'ok'))
 
   assert.equal(await (await app.fetch(get('/'))).text(), 'middleware failed')
 })
 
 test('reads the request body in a handler', async () => {
-  const app = newApp().post('/echo', async c => c.json(await c.req.json()))
+  const app = newApp().post('/echo', defineRoute(async c => await c.req.json()))
   const response = await app.fetch(
     new Request('http://localhost/echo', {
       method: 'POST',
@@ -240,7 +279,7 @@ test('reads the request body in a handler', async () => {
 })
 
 test('HEAD falls back to the GET route without a body', async () => {
-  const app = newApp().get('/', c => c.text('body here'))
+  const app = newApp().get('/', defineRoute(() => 'body here'))
   const response = await app.fetch(new Request('http://localhost/', { method: 'HEAD' }))
 
   assert.equal(response.status, 200)
@@ -251,7 +290,7 @@ test('HEAD falls back to the GET route without a body', async () => {
 test('matches url components beyond the pathname', async () => {
   const app = newApp().get(
     { hostname: ':tenant.example.com', pathname: '/dashboard' },
-    c => c.text(c.params.tenant ?? ''),
+    defineRoute(c => c.params.tenant ?? ''),
   )
 
   assert.equal(await (await app.fetch(new Request('https://acme.example.com/dashboard'))).text(), 'acme')
@@ -259,27 +298,60 @@ test('matches url components beyond the pathname', async () => {
 
 test('the first matching route wins', async () => {
   const app = newApp()
-    .get('/users/me', c => c.text('me'))
-    .get('/users/:id', c => c.text('other'))
+    .get('/users/me', defineRoute(() => 'me'))
+    .get('/users/:id', defineRoute(() => 'other'))
 
   assert.equal(await (await app.fetch(get('/users/me'))).text(), 'me')
   assert.equal(await (await app.fetch(get('/users/9'))).text(), 'other')
 })
 
-test('an explicit content type wins over the helper default', async () => {
+test('an explicit content type wins over the type default', async () => {
   const app = newApp().get('/', c =>
-    c.text('{}', { headers: { 'content-type': 'application/json' } }),
+    c.body('{}', { type: TEXT, headers: { 'content-type': 'application/json' } }),
   )
 
   assert.equal((await app.fetch(get('/'))).headers.get('content-type'), 'application/json')
 })
 
 test('routes registered after the first request are still matched', async () => {
-  const app = newApp().get('/first', c => c.text('first'))
+  const app = newApp().get('/first', defineRoute(() => 'first'))
 
   assert.equal((await app.fetch(get('/second'))).status, 404)
 
-  app.get('/second', c => c.text('second'))
+  app.get('/second', defineRoute(() => 'second'))
 
   assert.equal(await (await app.fetch(get('/second'))).text(), 'second')
+})
+
+test('the status can be read back from the context', async () => {
+  const seen: number[] = []
+
+  const app = newApp().get(
+    '/',
+    defineRoute(c => {
+      seen.push(c.status())
+      c.status(418)
+      seen.push(c.status())
+
+      return 'teapot'
+    }),
+  )
+
+  const response = await app.fetch(get('/'))
+
+  assert.equal(response.status, 418)
+  assert.deepEqual(seen, [200, 418])
+})
+
+test('reading the status does not set one', async () => {
+  const app = newApp().get(
+    '/',
+    defineRoute(c => {
+      c.status()
+
+      return 'ok'
+    }),
+  )
+
+  assert.equal((await app.fetch(get('/'))).status, 200)
 })

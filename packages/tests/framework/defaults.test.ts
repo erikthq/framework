@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createApp, readSignals } from 'framework'
+import { createApp, defineRoute } from '@erikt/framework'
 
 const BIG = 'hello world '.repeat(500)
 
@@ -17,7 +17,7 @@ async function inflate(response: Response): Promise<string> {
 }
 
 test('compress is enabled by default', async () => {
-  const app = createApp({ banner: false, logger: false }).get('/', c => c.text(BIG))
+  const app = createApp({ banner: false, logger: false }).get('/', defineRoute(() => BIG))
   const response = await app.fetch(gzipRequest())
 
   assert.equal(response.headers.get('content-encoding'), 'gzip')
@@ -28,7 +28,7 @@ test('banner is registered by default', async () => {
   const output: string[] = []
   const app = createApp({
     logger: false,
-    banner: { color: false, log: message => output.push(message) },
+    banner: { color: false, log: message => output.push(message) }
   })
 
   const info = await app.start({ url: 'http://localhost:4321' })
@@ -38,8 +38,7 @@ test('banner is registered by default', async () => {
 })
 
 test('compress: false disables it', async () => {
-  const app = createApp({ banner: false, compress: false, logger: false }).get('/', c =>
-    c.text(BIG),
+  const app = createApp({ banner: false, compress: false, logger: false }).get('/', defineRoute(() => BIG),
   )
   const response = await app.fetch(gzipRequest())
 
@@ -57,7 +56,7 @@ test('banner: false disables it', async () => {
 test('compress options pass through', async () => {
   const app = createApp({ banner: false, compress: { threshold: 0 }, logger: false }).get(
     '/',
-    c => c.text('tiny'),
+    defineRoute(() => 'tiny'),
   )
   const response = await app.fetch(gzipRequest())
 
@@ -69,7 +68,7 @@ test('banner options pass through', async () => {
   const output: string[] = []
   const app = createApp({
     logger: false,
-    banner: { color: false, title: 'custom-title', log: message => output.push(message) },
+    banner: { color: false, title: 'custom-title', log: message => output.push(message) }
   })
 
   await app.start()
@@ -86,7 +85,7 @@ test('the default compress wraps user middleware', async () => {
 
       return response
     })
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(gzipRequest())
 
@@ -96,7 +95,7 @@ test('the default compress wraps user middleware', async () => {
 })
 
 test('the default compress still honours the threshold', async () => {
-  const app = createApp({ banner: false, logger: false }).get('/', c => c.text('small body'))
+  const app = createApp({ banner: false, logger: false }).get('/', defineRoute(() => 'small body'))
   const response = await app.fetch(gzipRequest())
 
   assert.equal(response.headers.get('content-encoding'), null)
@@ -104,7 +103,7 @@ test('the default compress still honours the threshold', async () => {
 })
 
 test('the default compress does nothing without accept-encoding', async () => {
-  const app = createApp({ banner: false, logger: false }).get('/', c => c.text(BIG))
+  const app = createApp({ banner: false, logger: false }).get('/', defineRoute(() => BIG))
   const response = await app.fetch(new Request('http://localhost/'))
 
   assert.equal(response.headers.get('content-encoding'), null)
@@ -112,11 +111,11 @@ test('the default compress does nothing without accept-encoding', async () => {
 })
 
 test('an explicitly added compress does not double-encode', async () => {
-  const { compress } = await import('framework')
+  const { compress } = await import('@erikt/framework')
 
   const app = createApp({ banner: false, logger: false })
     .use(compress({ threshold: 0 }))
-    .get('/', c => c.text(BIG))
+    .get('/', defineRoute(() => BIG))
 
   const response = await app.fetch(gzipRequest())
 
@@ -128,7 +127,7 @@ test('logger is registered by default', async () => {
   const output: string[] = []
   const app = createApp({ banner: false, logger: { log: message => output.push(message) } }).get(
     '/',
-    c => c.text('ok'),
+    defineRoute(() => 'ok'),
   )
 
   const info = await app.start()
@@ -140,7 +139,7 @@ test('logger is registered by default', async () => {
 })
 
 test('the default logger times every response', async () => {
-  const app = createApp({ banner: false, logger: { log: () => {} } }).get('/', c => c.text('ok'))
+  const app = createApp({ banner: false, logger: { log: () => {} } }).get('/', defineRoute(() => 'ok'))
   const response = await app.fetch(new Request('http://localhost/'))
 
   assert.match(response.headers.get('x-response-time') ?? '', /^\d+\.\dms$/)
@@ -148,7 +147,7 @@ test('the default logger times every response', async () => {
 })
 
 test('logger: false disables it', async () => {
-  const app = createApp({ banner: false, logger: false }).get('/', c => c.text('ok'))
+  const app = createApp({ banner: false, logger: false }).get('/', defineRoute(() => 'ok'))
 
   const info = await app.start()
   const response = await app.fetch(new Request('http://localhost/'))
@@ -161,8 +160,8 @@ test('logger options pass through', async () => {
   const output: string[] = []
   const app = createApp({
     banner: false,
-    logger: { header: 'x-elapsed', log: message => output.push(message) },
-  }).get('/', c => c.text('ok'))
+    logger: { header: 'x-elapsed', log: message => output.push(message) }
+  }).get('/', defineRoute(() => 'ok'))
 
   const response = await app.fetch(new Request('http://localhost/'))
 
@@ -172,7 +171,7 @@ test('logger options pass through', async () => {
 })
 
 test('datastar is registered by default', async () => {
-  const app = createApp({ banner: false, logger: false }).get('/', c => c.json(readSignals(c)))
+  const app = createApp({ banner: false, logger: false }).get('/', defineRoute(c => c.signals))
 
   const info = await app.start()
   const response = await app.fetch(new Request('http://localhost/?datastar=%7B%22count%22%3A9%7D'))
@@ -182,23 +181,22 @@ test('datastar is registered by default', async () => {
 })
 
 test('datastar: false disables it', async () => {
-  const app = createApp({ banner: false, datastar: false, logger: false }).get('/', c =>
-    c.json(readSignals(c)),
+  const app = createApp({ banner: false, datastar: false, logger: false }).get('/', defineRoute(c => ({ present: c.signals !== undefined })),
   )
 
   const info = await app.start()
   const response = await app.fetch(new Request('http://localhost/?datastar=%7B%22count%22%3A9%7D'))
 
   assert.deepEqual(info.plugins, [])
-  assert.deepEqual(await response.json(), {})
+  assert.deepEqual(await response.json(), { present: false })
 })
 
 test('datastar options pass through', async () => {
   const app = createApp({
     banner: false,
     datastar: { param: 'ds' },
-    logger: false,
-  }).get('/', c => c.json(readSignals(c)))
+    logger: false
+  }).get('/', defineRoute(c => c.signals))
 
   const response = await app.fetch(new Request('http://localhost/?ds=%7B%22count%22%3A9%7D'))
 
@@ -206,15 +204,16 @@ test('datastar options pass through', async () => {
 })
 
 test('the default datastar leaves the body for the handler', async () => {
-  const app = createApp({ banner: false, logger: false }).post('/', async c =>
-    c.json({ signals: readSignals(c), body: await c.req.json() }),
+  const app = createApp({ banner: false, logger: false }).post(
+    '/',
+    defineRoute(async c => ({ signals: c.signals, body: await c.req.json() })),
   )
 
   const response = await app.fetch(
     new Request('http://localhost/', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: '{"count":9}',
+      body: '{"count":9}'
     }),
   )
 

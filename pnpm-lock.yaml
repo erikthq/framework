@@ -8,16 +8,36 @@ importers:
 
   .: {}
 
-  packages/deno-adapter: {}
+  packages/create-framework:
+    devDependencies:
+      '@erikt/framework-node':
+        specifier: workspace:*
+        version: link:../framework-node
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
+  packages/create-framework/template:
+    dependencies:
+      '@erikt/framework':
+        specifier: workspace:*
+        version: link:../../framework
+      '@erikt/framework-node':
+        specifier: workspace:*
+        version: link:../../framework-node
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
 
   packages/example:
     dependencies:
-      framework:
+      '@erikt/framework':
         specifier: workspace:*
         version: link:../framework
-      node-adapter:
+      '@erikt/framework-node':
         specifier: workspace:*
-        version: link:../node-adapter
+        version: link:../framework-node
     devDependencies:
       '@types/node':
         specifier: ^26.4.0
@@ -25,7 +45,17 @@ importers:
 
   packages/framework: {}
 
-  packages/node-adapter:
+  packages/framework-deno:
+    dependencies:
+      '@erikt/framework':
+        specifier: workspace:*
+        version: link:../framework
+
+  packages/framework-node:
+    dependencies:
+      '@erikt/framework':
+        specifier: workspace:*
+        version: link:../framework
     devDependencies:
       '@types/node':
         specifier: ^26.4.0
@@ -33,15 +63,18 @@ importers:
 
   packages/tests:
     dependencies:
-      deno-adapter:
+      '@erikt/create-framework':
         specifier: workspace:*
-        version: link:../deno-adapter
-      framework:
+        version: link:../create-framework
+      '@erikt/framework':
         specifier: workspace:*
         version: link:../framework
-      node-adapter:
+      '@erikt/framework-deno':
         specifier: workspace:*
-        version: link:../node-adapter
+        version: link:../framework-deno
+      '@erikt/framework-node':
+        specifier: workspace:*
+        version: link:../framework-node
     devDependencies:
       '@types/node':
         specifier: ^26.4.0

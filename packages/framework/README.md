@@ -1,18 +1,24 @@
-# framework
+# @erikt/framework
 
 Runtime-agnostic building blocks, built on web platform APIs only. No
 dependencies, no Node.js.
 
+- **defineConfig** — one file that wires a whole site: routes, scripts, styles,
+  assets, runtime.
 - **Server** — a `Request` → `Response` handler with routing and middleware.
 - **compress** — response compression via `CompressionStream`.
 - **Plugins** — lifecycle, per-request and HTML-injection hooks, plus a built-in
   startup banner and request logger.
+- **assets** — a `public/` directory served as-is, with ETags, 304s and ranges.
 - **scripts** — browser TypeScript from a folder, type-stripped, content-hashed
   and injected into the pages that declare they need it.
+- **styles** — `css``` blocks written next to the markup, hashed and served as
+  stylesheets.
 - **datastar** — signals off the request, element and signal patches back over
   SSE. On by default.
-- **definePage** — an HTML page, wrapped in your layout automatically, and
-  **defineEndpoint** for a fragment that is not.
+- **defineRoute** — one route function for markup or data: an HTML page wrapped
+  in the layout it asks for, a fragment that asks for none, or an object served
+  as JSON.
 - **fileRouter** — routes from a tree of files, read through a `FileStore`.
 - **FileStore** — the file-reading port: one interface, one adapter per runtime.
 - **Router** — URL matching on top of `URLPattern`.
@@ -23,7 +29,7 @@ dependencies, no Node.js.
 `Response` out. Inspired by [Hono][hono], and deliberately a subset of it.
 
 ```ts
-import { createApp } from 'framework'
+import { createApp, defineRoute } from '@erikt/framework'
 
 const app = createApp()
 
@@ -35,9 +41,16 @@ app.use(async (c, next) => {
   return response
 })
 
-app.get('/', c => c.text('hello'))
-app.get('/users/:id', c => c.json({ id: c.params.id }))
-app.post('/users', async c => c.json(await c.req.json(), 201))
+app.get('/', defineRoute(() => 'hello'))
+app.get('/users/:id', defineRoute(c => ({ id: c.params.id })))
+app.post(
+  '/users',
+  defineRoute(async c => {
+    c.status(201)
+
+    return await c.req.json()
+  }),
+)
 
 const response = await app.fetch(new Request('http://localhost/users/42'))
 ```
@@ -50,10 +63,10 @@ export default app          // Deno, Bun, Cloudflare Workers
 ```
 
 Running it on Node needs an adapter to bridge `node:http` to `Request`/
-`Response`. That is `node-adapter` — `framework` itself never imports `node:*`.
+`Response`. That is `@erikt/framework-node` — `framework` itself never imports `node:*`.
 
 ```ts
-import { serve } from 'node-adapter'
+import { serve } from '@erikt/framework-node'
 
 const server = await serve(app, { port: 3000 })
 ```
@@ -81,13 +94,26 @@ Two behaviours worth knowing:
 | `c.req` | The `Request` |
 | `c.url` | Its parsed `URL` |
 | `c.params` | Path params from the matched route |
-| `c.text` `c.json` `c.html` `c.body` `c.redirect` | Response helpers |
-| `c.header(name, value)` `c.status(code)` | Applied to the response the helpers build |
+| `c.body` `c.redirect` | The two response builders. A route does not need them — see *Pages and layouts* |
+| `c.header(name, value)` `c.status(code)` | Applied to whatever response is built |
+| `c.status()` | Reads it back — the status the response *would* carry, 200 if nothing set it |
 | `c.set(key, value)` `c.get(key)` | Per-request state, for passing data from middleware. Typed — see below |
+| `c.signals` | Added by the `datastar` plugin — see *Plugin: datastar* |
 
-Helpers take a status or a `ResponseInit` as their second argument:
-`c.json(value, 201)` or `c.text('no', { status: 401, headers: { … } })`. An
-explicit `content-type` always beats the helper's default.
+There is no `c.text`, `c.json` or `c.html`. A route says what it is answering
+with by what it returns — `html``` is HTML, a string is text, an object is JSON
+— so the content type is decided once, where the content is. See *Pages and
+layouts*. `c.body` is for the rest: middleware, a plugin hook, an `onError`
+handler, anything that has to hand back a `Response` of its own.
+
+`c.body` takes a status or a `ResponseInit` as its second argument, plus `type`:
+
+```ts
+c.body('no', { status: 401, type: 'text/plain; charset=utf-8' })
+```
+
+`type` is a *default* content type — it lands only if nothing has set one
+already, so a `c.header('content-type', …)` still wins.
 
 #### The context bag is typed
 
@@ -97,7 +123,7 @@ is a compile error:
 
 ```ts
 // bag.ts — types only, nothing to import at runtime
-import type {} from 'framework'
+import type {} from '@erikt/framework'
 
 declare module 'framework' {
   interface ContextBag {
@@ -124,9 +150,10 @@ back as `unknown`. The `& {}` is not decoration: a plain union with `string`
 collapses to `string` and the editor stops offering the declared keys, which is
 the whole point.
 
-The framework declares the keys its own plugins use — `logger:started`,
-`datastar:signals`, `scripts:registry`, `scripts:used`, `scripts:taken` — so
-they show up as taken rather than colliding with one of yours by accident.
+The framework declares the keys it uses itself — `logger:started`,
+`datastar:signals`, `head:markup`, `head:taken`, `scripts:registry`,
+`styles:base` — so they show up as taken rather than colliding with one of yours
+by accident.
 Reading them is fine; writing them is your own foot. `datastar:signals` has
 `readSignals(c)` in front of it, which is the supported way in.
 
@@ -138,7 +165,8 @@ app.use(async (c, next) => {          // every request
 })
 
 app.use('/admin/*', async (c, next) => {   // scoped by pattern
-  if (c.req.headers.get('authorization') === null) return c.text('unauthorized', 401)
+  if (c.req.headers.get('authorization') === null)
+    return c.body('unauthorized', { status: 401, type: 'text/plain; charset=utf-8' })
 
   return next()
 })
@@ -155,14 +183,219 @@ see the error unless it wraps `next()` in `try`/`catch`. `onError` catches it.
 ### Errors and 404s
 
 ```ts
-app.notFound(c => c.json({ missing: c.url.pathname }, 404))
-app.onError((error, c) => c.json({ error: String(error) }, 500))
+app.notFound(
+  defineRoute(c => {
+    c.status(404)
+
+    return { missing: c.url.pathname }
+  }),
+)
+
+app.onError((error, c) =>
+  c.body(JSON.stringify({ error: String(error) }), {
+    status: 500,
+    type: 'application/json; charset=utf-8',
+  }),
+)
 ```
 
 Defaults are a plain-text 404 and a plain-text 500. `onError` catches throws from
 handlers and middleware alike.
 
 [hono]: https://hono.dev/
+
+## Configuration
+
+The quickest start is the starter, which writes everything below for you:
+
+```sh
+pnpm create @erikt/framework my-site
+```
+
+`createApp` and a handful of `app.plugin(…)` calls are the low-level way in.
+`defineConfig` is the quick one: a single file that names what your site is, with
+routes, scripts, styles and static assets wired up already.
+
+```ts
+// framework.config.ts
+import { defineConfig } from '@erikt/framework-node'
+
+import ErrorPage from './src/error.ts'
+import NotFound from './src/not-found.ts'
+
+export default defineConfig({
+  title: 'my-site',
+  root: new URL('./src/', import.meta.url),
+  notFound: NotFound,
+  error: ErrorPage,
+})
+```
+
+```json
+{ "scripts": { "dev": "node framework.config.ts" } }
+```
+
+That is the whole setup — one file, and it *is* the entry point. An adapter's
+`defineConfig` starts the server itself, so there is no second file whose only
+job is to call something. `src/routes/` are the routes, `src/scripts/` is browser
+code, `src/public/` is served as-is, `css``` blocks are served as stylesheets, and
+the Datastar runtime is served from your own origin.
+
+The import on the first line is the only runtime-specific thing in the file.
+Swap `@erikt/framework-node` for `@erikt/framework-deno` and nothing else changes.
+
+| Option | Default | |
+| --- | --- | --- |
+| `title` | — | Shorthand for `banner: { title }` |
+| `routes` | `'routes'` | Directory for file-based routes. `false` to turn off |
+| `scripts` | `'scripts'` | Directory for browser code. `false` to turn off |
+| `assets` | `'public'` | Directory served as-is. `false` to turn off |
+| `styles` | on | `false` to turn off, or `StylesOptions` |
+| `store` | — | A `FileStore` outright |
+| `plugins` | `[]` | Your own, registered before the file router |
+| `notFound` `error` | `not-found.ts` `error.ts` at the root | Named explicitly only to override the file |
+
+`banner`, `compress`, `logger` and `datastar` pass straight through to
+`createApp`, so everything under *Defaults* still applies. The one default a
+site adds on top is `datastar: { client: true }` — a site serves its own runtime
+rather than reaching for a CDN.
+
+Adapters add three more, because they are the three things a portable runtime
+cannot do:
+
+| Option | |
+| --- | --- |
+| `root` | Directory the site is read from, turned into a store by the adapter |
+| `port` `hostname` | Where to listen |
+| `listen` | `false` to build the site without serving it |
+
+The config is where the environment lands — nothing else reads it:
+
+```ts
+port: Number(process.env.PORT ?? 3000)
+```
+
+### Pages found by name
+
+`not-found.ts` and `error.ts` at the root of your site are picked up without
+being named in the config — the same way `routes/` and `public/` are. Each one
+default-exports its page:
+
+```ts
+// src/not-found.ts
+export default defineRoute(c => {
+  c.status(404)
+  useLayout(c, layout)
+
+  return html`<h1>Nothing here</h1>`
+})
+```
+
+```ts
+// src/error.ts
+export default defineErrorPage((error, c) => html`<p>${String(c.status())}</p>`)
+```
+
+They are ordinary pages: they ask for a layout the same way, and `useScript`
+works inside them. Naming `notFound` or `error` in the config overrides the file; having
+neither leaves the plain-text 404 and 500 from *Errors and 404s*.
+
+Existence is decided from a directory listing, not by catching a failed import —
+so a syntax error inside `not-found.ts` is an error you see, rather than a
+silent fall back to the default. A file that exports something other than a
+function is refused at startup, by name.
+
+### The tsconfig
+
+`framework` ships the compiler settings it expects, and each adapter narrows
+them to its runtime. Extend your **adapter's** and write nothing else:
+
+```json
+{
+  "extends": "@erikt/framework-node/tsconfig.base.json",
+  "include": ["src/**/*.ts", "framework.config.ts"]
+}
+```
+
+That gets you `strict` with `noUncheckedIndexedAccess` and
+`exactOptionalPropertyTypes`, `nodenext` resolution, `allowImportingTsExtensions`
+(there is no build step, so relative imports carry `.ts`), and the
+erasable-syntax rules Node's type stripping needs — `verbatimModuleSyntax`,
+`isolatedModules`, `erasableSyntaxOnly`.
+
+For code that does not run on your server, extend `@erikt/framework/tsconfig.browser.json`:
+the web-standards flavour — `DOM`, no Node types — plus the types for the
+Datastar runtime, so browser code can import it.
+
+```json
+// src/scripts/tsconfig.json
+{
+  "extends": "@erikt/framework/tsconfig.browser.json",
+  "include": ["**/*.ts"]
+}
+```
+
+Put it **in that folder and call it `tsconfig.json`**. An editor loads only
+`tsconfig.json`, walking up from the file it is showing, so a
+`tsconfig.scripts.json` at your project root works with `tsc -p` and leaves your
+editor to guess — which shows up as `Cannot find module 'datastar'` underlined
+in a file that builds fine.
+
+A base carries no `include` of its own, deliberately — an inherited one resolves
+against the directory it was written in, which would point you at the package's
+source rather than yours.
+
+### Serverless, and the two halves
+
+`framework` exports its own `defineConfig` and `createSite`. That pair is the
+**portable half**: it takes a `store` rather than a `root`, and it has no
+`start`, because binding a port is not something a `Request`/`Response` runtime
+does. It is what you want on Workers or Deno Deploy:
+
+```ts
+import { createSite, staticStore } from '@erikt/framework'
+
+export default createSite({ store: staticStore(files) })
+```
+
+`app.fetch` is the entry shape those runtimes already expect, so `export default`
+is the whole deployment.
+
+An adapter's `defineConfig` is the same config plus `root`, `port`, `hostname`
+and `listen` — and it *starts the server*. That is the difference between the
+two halves: `framework`'s is a pure identity function, because a portable
+runtime has nothing to start.
+
+`listen: false` gives you the config back without a server, which is what a test
+wants. To get the app itself, an adapter's `createSite` builds it from the same
+config, `root` included, and never listens.
+
+Adapters depend on `framework` for this layer, and only for this layer: `serve`
+and the stores import types from it but no values, so a bare `serve(handler)`
+still hosts any object with a `fetch` method.
+
+Everything an adapter must implement is exported as one schema — `Adapter`,
+`AdapterConfig`, `CreateStore`, `DirectoryStore`, `FetchHandler`, `Serve`,
+`ServeHandle`, `ServeOptions`. Writing one is a matter of satisfying that type;
+[ADAPTERS.md](../../ADAPTERS.md) is the long form.
+
+### Reaching past the config
+
+`createSite` returns a normal `App`, so anything the config does not cover is
+still yours:
+
+```ts
+import { defineRoute } from '@erikt/framework'
+import { createSite } from '@erikt/framework-node'
+
+const app = createSite(config)
+
+app.get('/health', defineRoute(() => ({ ok: true })))
+```
+
+Registration order is the one thing to know: the file router is registered
+**last**, after your `plugins`, so a route you claim by hand is matched before a
+file route that would also match it.
 
 ## Defaults
 
@@ -216,7 +449,7 @@ Compresses response bodies with the platform's [`CompressionStream`][cs].
 switched the default off and want it somewhere specific in the chain:
 
 ```ts
-import { compress, createApp } from 'framework'
+import { compress, createApp } from '@erikt/framework'
 
 const app = createApp({ compress: false })
 
@@ -274,13 +507,13 @@ A plugin is a plain object with a `name` and any of the lifecycle hooks. Registe
 with `app.plugin(...)`.
 
 ```ts
-import { createApp } from 'framework'
+import { createApp, defineRoute } from '@erikt/framework'
 
 app.plugin({
   name: 'request-id',
 
   setup(app) {
-    app.get('/healthz', c => c.text('ok'))
+    app.get('/healthz', defineRoute(() => 'ok'))
   },
 
   onRequest(c) {
@@ -309,9 +542,8 @@ Hooks run in registration order and every one may be `async` — they are awaite
 `onError` observes; it does not handle. Use `app.onError` to produce the response.
 
 `injectHTML` is the one hook that is not on the path of every request. It runs
-only where a `definePage` route is wrapped in a `createApp({ layout })` — see
-*Pages and layouts* — so a JSON route, a raw `c.html()` and a Datastar patch are
-never rewritten:
+only where a `defineRoute` route renders — see *Pages and layouts* — so a JSON
+route, a raw `c.body()` and a Datastar patch are never rewritten:
 
 ```ts
 app.plugin({
@@ -323,8 +555,8 @@ app.plugin({
 })
 ```
 
-`target` is `'document'` when a page is being wrapped in a layout and
-`'fragment'` for an endpoint or a layout-less page. Check it whenever what you
+`target` is `'document'` when the route asked for a layout and `'fragment'`
+when it did not. Check it whenever what you
 inject is page-wide — a runtime, a stylesheet, a meta tag — since a fragment is
 patched into a page that already has those. The `datastar` plugin's `client`
 option is exactly this case.
@@ -344,7 +576,7 @@ const info = await app.start({ url: 'http://localhost:3000' })
 `start()` runs each `setup` then each `onStart`, exactly once — later calls return
 the first result. **You rarely call it yourself:** `app.fetch` awaits it, so an
 app that is only ever fetched still starts correctly, and no request is served
-before startup finishes. `node-adapter`'s `serve` calls it with the bound URL.
+before startup finishes. `@erikt/framework-node`'s `serve` calls it with the bound URL.
 
 `StartInfo` carries what a plugin needs to report itself:
 
@@ -370,7 +602,7 @@ const app = createApp({ banner: { title: 'my-app' } })
 Or register it yourself after opting out, e.g. to control plugin order:
 
 ```ts
-import { banner, createApp } from 'framework'
+import { banner, createApp } from '@erikt/framework'
 
 const app = createApp({ banner: false }).plugin(banner({ title: 'my-app' }))
 ```
@@ -417,7 +649,7 @@ Or register it yourself after opting out, e.g. to time only what a plugin
 registered before it did not already handle:
 
 ```ts
-import { createApp, logger } from 'framework'
+import { createApp, logger } from '@erikt/framework'
 
 const app = createApp({ logger: false }).plugin(logger())
 ```
@@ -442,6 +674,75 @@ The header is added by rebuilding the response rather than by setting it in
 place, because a handler is free to return a response whose headers are immutable
 — anything straight from `fetch()`, or a `Response.redirect()`.
 
+## Plugin: assets
+
+Serves a directory of files as they are — a `public/` folder of favicons,
+images, fonts, robots.txt — through a `FileStore`, with the conditional-request
+handling that makes a browser cache actually work.
+
+```ts
+import { assets, createApp } from '@erikt/framework'
+import { nodeStore } from '@erikt/framework-node'
+
+const store = nodeStore(new URL('./', import.meta.url))
+
+const app = createApp().plugin(assets({ store, dir: 'public' }))
+```
+
+`src/public/favicon.svg` is then `GET /favicon.svg`.
+
+| Option | Default | |
+| --- | --- | --- |
+| `store` | — | Required. A `FileStore` with `read` |
+| `dir` | `'public'` | Folder to serve, relative to the store's root |
+| `base` | `'/'` | URL prefix to serve it under |
+| `cacheControl` | `public, max-age=0, must-revalidate` | Sent with every file |
+| `types` | a table of the common web types | Merged over the built-in one, keyed by extension including the dot |
+
+### What it adds to the file
+
+The store hands back bytes with `Content-Length` and `Last-Modified`. Everything
+else is this plugin's job, because it is the same everywhere and so does not
+belong in an adapter:
+
+- **`Content-Type`** from the extension. A type the store set itself is left
+  alone — the store knows more than a table does.
+- **`ETag`**, weak, derived from size and mtime rather than the bytes, so
+  serving a file never costs a hash of it. It is not a claim about content, and
+  it says so with the `W/` prefix.
+- **`304 Not Modified`** for a matching `If-None-Match`, or `If-Modified-Since`
+  when there is no `If-None-Match` — the order the spec asks for. The 304
+  carries the validators and no body.
+- **`206 Partial Content`** for a `Range`, with `Content-Range` and
+  `Accept-Ranges: bytes`. `bytes=2-5`, `bytes=7-` and `bytes=-3` all work; a
+  range past the end is a `416`. A multi-range or unparseable header is
+  ignored and the whole file is sent, which the spec allows.
+
+The body is only buffered when a range was actually asked for. Otherwise it is
+passed through in whatever shape the store returned, so a store that streams
+keeps streaming.
+
+### How it decides what to serve
+
+The directory is listed **once at startup** into a path map, and the plugin then
+registers one piece of middleware. Two things follow, both deliberate:
+
+- **A request for anything else costs a `Map` lookup and falls through** to the
+  router. Nothing is read from disk on a miss, and no route pattern is
+  registered that could shadow one of yours — `/` still reaches your `/` route
+  even with `base: '/'`.
+- **A file added while the server is running is not served** until it restarts,
+  the same as `fileRouter` and `scripts`. What is *in* the file is read per
+  request, so editing one is picked up immediately; it is the listing that is
+  fixed.
+
+There is no directory index: `/` is never quietly answered with
+`public/index.html`, because that would take a path your router almost certainly
+wants. Link the file by name if you want it.
+
+Only `GET` and `HEAD` are handled; anything else falls through, so you can still
+`POST` to a path that happens to match a file.
+
 ## Plugin: datastar
 
 Server-driven UI over [Datastar][datastar]. The plugin reads the signals the
@@ -453,7 +754,7 @@ does not use it. Switch on `client` and the browser runtime is served and
 wired up too, so there is nothing to add to your layout:
 
 ```ts
-const app = createApp({ layout, datastar: { client: true } })
+const app = createApp({ datastar: { client: true } })
 ```
 
 ### The browser runtime
@@ -478,7 +779,7 @@ would rather place the tag yourself — behind a CDN, under a different path, on
 some pages only — leave it off and use the exports:
 
 ```ts
-import { DATASTAR_CLIENT, DATASTAR_VERSION } from 'framework'
+import { DATASTAR_CLIENT, DATASTAR_VERSION } from '@erikt/framework'
 
 app.get('/vendor/datastar.js', c => c.body(DATASTAR_CLIENT, { headers: { … } }))
 ```
@@ -490,21 +791,52 @@ and the two commands that regenerate it.
 
 Datastar sends every signal that does not start with `_` on every request: in
 the `datastar` query parameter on `GET`, in a JSON body on everything else. The
-plugin's `onRequest` hook parses both and stores the result on the context bag,
-where `readSignals` picks it up:
+plugin's `onRequest` hook parses both, and they arrive as **`c.signals`**:
 
 ```ts
-import { readSignals } from 'framework'
-import type { Context } from 'framework'
-
-type Search = { query?: string }
-
-export const POST = (c: Context) => c.json(readSignals<Search>(c))
+export const POST = defineRoute(c => c.signals)
 ```
 
-`readSignals` returns `{}` when there are no signals, so it never returns
-`undefined`. The type parameter is a claim about a payload the client controls,
-not a guarantee — validate anything you are going to trust.
+`signals` is not part of core: the plugin adds it to `Context` itself, which is
+why `Context` is an interface. Turn the plugin off and nothing puts one there.
+
+**Declare every signal your app defines.** Put them in one place, the same way
+`ContextBag` works, and adding one is what gives it a type and an autocomplete
+entry on `c.signals`:
+
+```ts
+// src/bag.ts — types only, nothing to import at runtime
+import type {} from '@erikt/framework'
+
+declare module 'framework' {
+  interface Signals {
+    query?: string
+    page?: number
+  }
+}
+```
+
+```ts
+c.signals.query      // string | undefined
+c.signals.anything   // unknown — undeclared keys still read
+```
+
+**Declare them optional.** A signal is whatever the browser chose to send, so a
+route should still say what it wants when nothing arrives:
+
+```ts
+const { page = 1 } = c.signals
+```
+
+Declaring `page: number` would type that default as dead code while the request
+that omits it hands you `undefined` anyway — the destructuring default is what
+keeps `POST /api/count` with an empty body from computing `NaN`. A declaration
+is a claim about a payload **the client controls**, not a guarantee; validate
+anything you are going to trust.
+
+The framework declares its own — `headAssets`, which `useScript` uses to know
+what a page already holds — so it shows as taken rather than colliding with one
+of yours.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -515,7 +847,7 @@ Register it by hand only when you have switched the default off and want it in a
 particular position among your own plugins:
 
 ```ts
-import { createApp, datastar } from 'framework'
+import { createApp, datastar } from '@erikt/framework'
 
 const app = createApp({ datastar: false }).plugin(datastar())
 ```
@@ -532,7 +864,7 @@ still call `c.req.json()` on the body it was sent.
 as a `GET`/`POST` export in `routes/`:
 
 ```ts
-import { defineStream, html, readSignals } from 'framework'
+import { defineStream, html, readSignals } from '@erikt/framework'
 
 type Counter = { count?: number }
 
@@ -557,6 +889,119 @@ export const GET = defineStream(async stream => {
 })
 ```
 
+### Reaching the runtime from browser code
+
+With `client` on, the plugin claims an entry in the page's **import map**, so a
+`scripts/` module can import the runtime by name — no URL, no global:
+
+```ts
+// src/scripts/signals.ts
+import { getPath, mergePatch } from 'datastar'
+
+const count = getPath<number>('count') ?? 0
+
+mergePatch({ count: count + 1 })
+mergePatch({ stale: null })        // null removes a signal
+```
+
+The full surface — sixteen values, typed in `framework/src/datastar-runtime.ts`:
+
+| Signals | |
+| --- | --- |
+| `mergePatch(patch, { ifMissing })` | Merge into the store, batched. `null` removes a signal |
+| `mergePaths(entries, options)` | The same, from `[path, value]` pairs |
+| `getPath<T>('a.b')` | Read one signal by dot path, `undefined` when absent |
+| `filtered({ include, exclude }, from)` | A plain snapshot, narrowed by path |
+| `root` | The live store itself |
+
+| Reactivity | |
+| --- | --- |
+| `signal(initial)` | Call bare to read, with a value to write |
+| `computed(getter)` | A derived read-only value |
+| `effect(run)` | Runs now and on change; returns a stop function |
+| `beginBatch()` `endBatch()` | Coalesce writes into one notification |
+| `startPeeking()` `stopPeeking()` | Read without subscribing |
+
+| Extending it | |
+| --- | --- |
+| `action(plugin)` | Register an `@name()` action |
+| `attribute(plugin)` | Register a `data-*` attribute |
+| `watcher(plugin)` | Register a global watcher |
+| `actions` | Every registered action, by name |
+
+There is one import map per document — a browser allows no more — so `framework`
+owns it and plugins contribute entries. It is emitted **before** every module
+script, because a browser ignores a map that arrives after module loading has
+begun, and only into a whole document: a fragment is patched into a page that
+already has one. Injected head markup lands just before `</head>`, so do not
+load modules higher up in your layout's head.
+
+Types come from `@erikt/framework/tsconfig.browser.json` — see *The tsconfig*. At
+runtime the bare specifier resolves through the map to the same module instance
+the page already loaded, so it is the same signal store.
+
+**This is not Datastar's documented surface.** Its reference covers `data-*`
+attributes and the SSE events, so treat a version bump as a place to re-check
+these. The signatures come from Datastar's own v1.0.3 source rather than being
+inferred. One deliberate simplification: `attribute` plugins are typed loosely,
+because Datastar derives which of `key`/`value`/`rx` a plugin receives from its
+own `requirement` through conditional types that shift between versions.
+
+To *observe* changes instead, no import is needed: Datastar dispatches a
+`datastar-signal-patch` `CustomEvent` on `document`, whose `detail` carries what
+changed.
+
+Prefer a `data-on:` expression or a server-sent `patchSignals` where either will
+do — the backend driving state is the point of the thing.
+
+### Patching a whole page
+
+Sometimes the simplest answer to "what changed?" is *the page*. `patchPage`
+re-renders a route through the app and sends it as one patch, and Datastar
+morphs it over `documentElement` — a soft reload that keeps scroll position and
+does not re-fetch assets:
+
+```ts
+// routes/api/refresh.ts
+export const GET = defineStream(async stream => {
+  await stream.patchPage()
+})
+```
+
+With no argument it renders **the page the request came from**, read off
+`Referer`. That is what makes one endpoint work from every page: the same button
+in your layout refreshes `/` from `/` and `/about` from `/about`. Name a route to
+override it — `patchPage('/dashboard')`.
+
+It works because Datastar parses markup containing `</html>` as a whole document
+and morphs it over the current one, so the patch carries no `selector` and no
+`mode`; the default outer morph is the one that does this.
+
+The render is a real request back through your own app — same routes, same
+middleware, same layout — with four headers dropped, each because it would
+answer with something other than the page's markup: `Accept-Encoding` (a
+compressed body `.text()` cannot decode), `Range`, `If-None-Match` and
+`If-Modified-Since` (a 304 with no body at all), and `Datastar-Request` (so a
+route that branches on it renders its page form). It carries
+`X-Framework-Render: 1`, which is both a signal to your own routes and the guard
+that stops a page from patching itself forever.
+
+It refuses, loudly, rather than sending something useless: no `Referer` and no
+argument, another origin, a route that answers with something other than HTML,
+or a render that is already a render. A stream reports those the way it reports
+any throw — by aborting.
+
+**What a full-page morph costs you.** `data-signals` is re-applied as the
+document morphs, so a signal declared with a literal default goes back to that
+default: `data-signals="{count: 0}"` resets `count` to `0`. That is not a bug to
+work around so much as the Datastar model asserting itself — the server owns the
+state, so render the current value into the attribute rather than a literal.
+Signals the server never writes are better off `_`-prefixed and local.
+
+Reach for it when a change touches several parts of a page at once, or when one
+endpoint serves pages that differ. A targeted `patchElements` is cheaper and
+does not disturb anything else.
+
 `useScript` works inside a stream: with no document to render, the tag is
 appended to the `<head>` of the one already on screen as an element patch. See
 *Where the tag lands* under *Plugin: scripts*.
@@ -566,6 +1011,7 @@ appended to the `<head>` of the one already on screen as an element patch. See
 | `patchElements(elements, options?)` | Morph markup into the page |
 | `patchSignals(signals, options?)` | Merge values into the client's signals. `null` removes one |
 | `removeElements(selector)` | Shorthand for a `remove`-mode patch |
+| `patchPage(target?)` | Re-render a whole page and morph it in. `await`s |
 | `event(name, lines)` | Raw event, for anything the helpers do not cover |
 | `close()` | End the stream early |
 | `closed` | `true` once it has ended, or the client has gone away |
@@ -603,12 +1049,12 @@ and gets a `<script>` tag for those and no others.
 **Off by default.** It needs a store that can `read`:
 
 ```ts
-import { createApp, scripts } from 'framework'
-import { nodeStore } from 'node-adapter'
+import { createApp, scripts } from '@erikt/framework'
+import { nodeStore } from '@erikt/framework-node'
 
 const store = nodeStore(new URL('./', import.meta.url))
 
-const app = createApp({ layout }).plugin(scripts({ store, dir: 'scripts' }))
+const app = createApp().plugin(scripts({ store, dir: 'scripts' }))
 ```
 
 | Option | Default | |
@@ -624,9 +1070,9 @@ const app = createApp({ layout }).plugin(scripts({ store, dir: 'scripts' }))
 unless something asked for it:
 
 ```ts
-import { definePage, html, useScript } from 'framework'
+import { defineRoute, html, useScript } from '@erikt/framework'
 
-export const GET = definePage(c => {
+export const GET = defineRoute(c => {
   useScript(c, 'json-routes')
 
   return html`<button data-url="/api/time">GET /api/time</button>`
@@ -665,23 +1111,32 @@ export const layout = defineLayout((content, c) => {
 ```
 
 Tags come out in the order they were asked for. A name that does not exist
-**throws**, naming what is available — a typo is a 500 you see immediately
-rather than a script that silently never loads. So does calling `useScript` with
-the plugin unregistered.
+still gets a tag, at an unhashed `/scripts/<name>.js` that nothing serves — the
+page renders as it would otherwise, and the browser reports one 404 naming the
+file it could not load. A deleted or misspelt script costs you that script, not
+the page. It is not skipped silently either: the 404 is the signal, so keep an
+eye on the console when a script does not seem to run.
+
+Calling `useScript` with the plugin unregistered does still throw — that is a
+misconfigured app rather than a missing file.
 
 ### Where the tag lands
 
 The same `useScript` call, three different destinations, decided by what is
 rendering:
 
+These are the destinations for a `useStyle` `<link>` too — both fill the same
+per-request queue.
+
 | Rendered by | The tag goes |
 | --- | --- |
-| `definePage` with a layout | into the document's `<head>` |
-| `defineEndpoint`, or a page with no layout | appended to the fragment, so a partial carries its own script |
+| `defineRoute` that asked for a layout | into the document's `<head>` |
+| `defineRoute` that did not | appended to the fragment, so a partial carries its own script |
 | `defineStream` | appended to the `<head>` of the document already on screen, as a Datastar patch |
 
-A handler that renders no markup at all — `c.json`, or a bare `c.html` — has
-nowhere to put one, and `useScript` there does nothing.
+A handler that renders no markup at all — a bare `c.body`, or a `defineRoute`
+that returned text or data — has nowhere to put one, and `useScript` there does
+nothing.
 
 There is deliberately no way to make an **endpoint** target the head. One HTTP
 response is one body with one target; addressing the fragment and the head at
@@ -706,7 +1161,7 @@ data: elements <div id="panel">open</div>
 event: datastar-patch-elements
 data: selector head
 data: mode append
-data: elements <script type="module" src="/scripts/panel.212a66bf.js"></script>
+data: elements <script type="module" id="asset-scripts-panel-212a66bf-js" src="/scripts/panel.212a66bf.js"></script>
 ```
 
 The head patch is sent **after** the events that were already queued when you
@@ -715,12 +1170,79 @@ that asks and then sends nothing still gets it, at close. Each script goes out
 once per request however many events follow, and asking again later in the same
 stream sends only the new one.
 
-Appending the same module twice is harmless if it happens — a browser evaluates
-a module once per URL, so a reconnecting stream re-appending its tag does not
-re-run it.
+#### It will not append what is already there
+
+A stream is *told* what the page already holds rather than asking the DOM. Every
+tag carries an `id` derived from its URL, a document seeds those ids into a
+`headAssets` signal, and Datastar sends signals back with every request — so the
+stream knows what to skip:
+
+```html
+<meta name="framework-head-assets" data-signals="{&quot;headAssets&quot;:{&quot;asset-styles-0632c4bd444c-css&quot;:true}}" />
+```
+
+Whatever a stream *does* send is recorded back into the same signal:
+
+```
+event: datastar-patch-elements
+data: selector head
+data: mode append
+data: elements <script type="module" id="asset-scripts-panel-212a66bf-js" src="…"></script>
+
+event: datastar-patch-signals
+data: signals {"headAssets":{"asset-scripts-panel-212a66bf-js":true}}
+```
+
+So a page that already loaded an asset does not get a second tag, and clicking a
+button twice appends once — the second request arrives carrying the id.
+
+**Why not just check the DOM?** Because Datastar cannot express "insert if
+missing" in one patch. A guard like `selector head:not(:has(#id))` skips
+correctly, but when the selector matches nothing Datastar logs
+`PatchElementsNoTargetsFound` — so every correct skip would print a console
+warning. Targeting `#id` with `mode outer` inverts the problem: it dedupes when
+the asset is present and fails to insert when it is absent, which is the case
+that matters. Carrying the answer in a signal is the only version that is both
+silent and right, and it is what Datastar's own model suggests: the backend is
+told the state and decides.
+
+The cost is one small `<meta>` in the head of any document that asked for an
+asset, plus those ids on Datastar requests from that page. If you have no
+Datastar client on the page the meta is inert.
+
+Within a single request no signal is needed: the head queue is keyed by that id,
+so two components asking for the same asset produce one tag.
 
 Finally, every script in the folder is **served** whether or not anything asks
 for it; declaring only decides who gets a tag.
+
+### Writing markup in browser code
+
+The same `html``` a route is written with is served to the browser, under
+`@erikt/framework/html`:
+
+```ts
+// src/scripts/menu.ts
+import { html } from '@erikt/framework/html'
+
+class Menu extends HTMLElement {
+  connectedCallback() {
+    this.innerHTML = html`<button>${this.getAttribute('label') ?? 'Open'}</button>`
+  }
+}
+```
+
+It escapes what you interpolate, which a bare template literal assigned to
+`innerHTML` does not — the difference between a label and an injection.
+
+The entry is claimed **only when a script the page actually loads imports it**,
+so a page with no browser code carries no import map at all. Types come from
+`@erikt/framework/tsconfig.browser.json`; see *The tsconfig*.
+
+What is served is derived from `helpers/html.ts` by `stripTypes`, never written
+beside it — `framework` cannot read its own files at runtime, so the browser
+build is carried as a string, and a test re-derives it and fails if the two
+drift.
 
 ### What it does to a file
 
@@ -754,19 +1276,114 @@ rebuild them onto. Same as `fileRouter`.
 A folder of browser code inside a Node package needs its own `tsconfig.json` —
 `lib: ["DOM"]` and `types: []`, rather than the Node types the rest of the
 package is checked against. `packages/example` does exactly that, in
-`tsconfig.scripts.json`, and excludes `src/scripts` from its main config.
+`src/scripts/tsconfig.json`, and excludes `src/scripts` from its main config.
 `exclude` is safe there for once: nothing ever *imports* these files, so
 TypeScript has no way to pull them into the other config.
 
+## Plugin: styles
+
+CSS written next to the markup it styles, with no build step. A `css``` block is
+hashed by its content, served as its own stylesheet, and linked from the pages
+that ask for it — `useScript`'s counterpart.
+
+```ts
+import { css, defineRoute, html, useStyle } from '@erikt/framework'
+
+const styles = css`
+  .card {
+    border: 1px solid currentColor;
+    border-radius: 0.5rem;
+  }
+`
+
+export const GET = defineRoute(c => {
+  useStyle(c, styles)
+
+  return html`<div class="card">…</div>`
+})
+```
+
+```html
+<link rel="stylesheet" href="/styles/0632c4bd444c.css" />
+```
+
+Register it once:
+
+```ts
+const app = createApp().plugin(styles())
+```
+
+| Option | Default | |
+| --- | --- | --- |
+| `base` | `'styles'` | URL prefix the stylesheets are served under |
+
+### How it differs from scripts
+
+`scripts` reads files from a store at startup. A `css``` block is written
+*inline*, and evaluated when its module is — so the two are built differently in
+three ways worth knowing:
+
+- **The hash is FNV-1a, not SHA-256.** `css``` is called while a module is being
+  evaluated and has to hand back a usable hash there and then, and
+  `crypto.subtle` is async. It is a cache key, not a signature: 48 bits tells a
+  handful of stylesheets apart and none of it is security.
+- **One route serves every stylesheet.** `/styles/:hash.css` looks the hash up
+  in a registry that `css``` fills as modules load, so nothing needs registering
+  as blocks are discovered — and a stylesheet is reachable at its URL even
+  before a page has asked for it, which is what stops a cached page from
+  breaking after a restart.
+- **Identical CSS is one stylesheet.** Blocks are keyed by their text, so the
+  same rules written in two components hash once, link once and are served once.
+  Surrounding whitespace is trimmed first, so indentation does not fork it.
+
+### Interpolation, and what not to put in it
+
+`${…}` is substituted into the text, which makes composing and sharing constants
+work:
+
+```ts
+const brand = '#663399'
+
+const button = css`
+  .button { background: ${brand}; }
+`
+```
+
+But the text is the cache key, so **a value that varies per request mints a new
+stylesheet every time** and the registry grows without bound. Interpolate
+build-time constants, not request data. For anything that genuinely varies per
+request, set a CSS custom property inline on the element and read it in the
+block — which is the better CSS answer anyway:
+
+```ts
+html`<div class="bar" style="--fill: ${percent}%">…</div>`
+```
+
+For the same reason, and because the result is served as a static file, `css```
+does **not** escape what you interpolate the way `html``` does. It is authored
+content; do not feed it user input.
+
+### Where the link lands
+
+Exactly where a `useScript` tag does — see *Where the tag lands* — because both
+fill the same per-request queue: the `<head>` of a document, appended to the
+fragment of an endpoint, and patched into the live head from a stream. Asking
+twice, or from two components, yields one `<link>`, and a stream will not append
+a stylesheet the page already has.
+
+Plugin injections come first in the head, then whatever the page asked for in
+the order it asked, so a runtime lands ahead of the assets that use it.
+
 ## Pages and layouts
 
-`definePage` marks a handler as an HTML page. Give `createApp` a `layout` and
-every page is wrapped in it before it is served — the page returns a fragment,
-the layout returns the document.
+`defineRoute` marks a handler as an HTML page. Call `useLayout` inside it and
+the render is wrapped before it is served — the page returns a fragment, the
+layout returns the document. There is no app-wide default: a route that does not
+ask for a layout answers with its markup as-is, which is what a fragment wants.
 
 ```ts
 // layout.ts
-import { defineLayout, html } from 'framework'
+import { defineLayout, html } from '@erikt/framework'
 
 export const layout = defineLayout(
   (content, c) => html`<!doctype html>
@@ -783,10 +1400,13 @@ export const layout = defineLayout(
 
 ```ts
 // routes/index.ts
-import { definePage, html } from 'framework'
+import { defineRoute, html, useLayout } from '@erikt/framework'
 
-export const GET = definePage(c => {
+import { layout } from '../layout.ts'
+
+export const GET = defineRoute(c => {
   c.set('title', 'Home')
+  useLayout(c, layout)
 
   return html`<h1>Home</h1>`
 })
@@ -794,7 +1414,7 @@ export const GET = definePage(c => {
 
 ```ts
 // main.ts
-const app = createApp({ layout }).plugin(fileRouter({ store, dir: 'routes' }))
+const app = createApp().plugin(fileRouter({ store, dir: 'routes' }))
 ```
 
 ```html
@@ -811,10 +1431,10 @@ const app = createApp({ layout }).plugin(fileRouter({ store, dir: 'routes' }))
 
 | | |
 | --- | --- |
-| `definePage(render)` | `render(c)` returns the page's HTML. Returns a `Handler`, so it works anywhere a handler does |
-| `defineEndpoint(render)` | The same, minus the layout — a fragment, not a document |
+| `defineRoute(render)` | `render(c)` returns the route's markup, or an object to serve as JSON. Returns a `Handler`, so it works anywhere a handler does |
+| `useLayout(c, layout)` | Wrap this response in `layout`. Without it the render is served as-is |
+| `defineErrorPage(render)` | A page for `onError`. `render(error, c)` — the error comes first |
 | `defineLayout(layout)` | `layout(content, c)` returns the document. Only there to infer the argument types — a plain function typed as `Layout` is the same thing |
-| `createApp({ layout })` | The layout for every page in this app |
 
 There is no `title` option, on purpose: page metadata rides on the context bag,
 so a page sets whatever a layout wants to read and the framework stays out of
@@ -825,25 +1445,54 @@ Both may be `async`. The response is `text/html`, and `c.status`, `c.header` and
 `c.set` called inside a page all still apply — so a page can be a 404:
 
 ```ts
-app.notFound(definePage(c => {
+app.notFound(defineRoute(c => {
   c.status(404)
 
   return html`<h1>Not found: ${c.url.pathname}</h1>`
 }))
 ```
 
-### Endpoints
+### Data
 
-`defineEndpoint` is `definePage` without the document. It renders a fragment, it
-is **never** wrapped in the layout however the app is configured, and it is the
-right thing for markup that is going somewhere other than a fresh page load — a
-panel fetched on demand, a row appended to a table, a partial re-render.
+Return an object instead of markup and the route answers with JSON:
+
+```ts
+// routes/api/users/[id].ts
+export const GET = defineRoute(c => ({ id: c.params.id, name: 'ada' }))
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"id":"42","name":"ada"}
+```
+
+A string is markup and anything else is data — `html` returns a string, so a
+page is a page. Arrays count as data, and so does an object from a database
+layer; `c.status`, `c.header` and `c.set` apply either way:
+
+```ts
+export const POST = defineRoute(async c => {
+  c.status(201)
+
+  return await save(await c.req.json())
+})
+```
+
+Nothing else touches a data response: no layout wraps it and no plugin injects
+into it, because there is no markup to put anything in. A route that calls
+`useLayout` and then returns data still answers with JSON — what it returned is
+what it meant.
+
+### Fragments
+
+A route that is answering with a **fragment** — a panel fetched on demand, a row
+appended to a table, a partial re-render — simply does not ask for a layout:
 
 ```ts
 // routes/api/panel.ts
-import { defineEndpoint, html, useScript } from 'framework'
-
-export const GET = defineEndpoint(c => {
+export const GET = defineRoute(c => {
   useScript(c, 'panel')
 
   return html`<div id="panel">open</div>`
@@ -854,19 +1503,20 @@ export const GET = defineEndpoint(c => {
 <div id="panel">open</div><script type="module" src="/scripts/panel.212a66bf.js"></script>
 ```
 
-That is the point of it. A page's `useScript` puts a tag in the layout's
-`<head>`; an endpoint has no `<head>`, so the tag is **appended to the fragment**
-and travels with the markup that needs it. The fragment stays self-contained:
-whatever inserts it gets the script along with it.
+That last part is the point. In a document, `useScript` puts its tag in the
+layout's `<head>`; a fragment has no `<head>`, so the tag is **appended to the
+markup** and travels with it. The fragment stays self-contained: whatever
+inserts it gets the script along with it.
 
-Everything else matches `definePage` — `c.status`, `c.header` and `c.set` apply,
-`html` escapes interpolations, and the result is a `Handler`, so it registers
-through `app.get`, `fileRouter` or anything else.
+The layout is read **after** the render, so a route — or a component it called —
+can decide partway through, and the last `useLayout` wins:
 
-One browser caveat that is not this framework's to fix: `innerHTML` and
-`insertAdjacentHTML` do **not** execute a `<script>` they insert. A client that
-inserts through DOM APIs — a morphing library, for one — does. Check what you
-are inserting with.
+```ts
+useLayout(c, bareShell)
+```
+ Everything else is unchanged: `c.status`,
+`c.header` and `c.set` apply, `html` escapes interpolations, and the result is a
+`Handler`, so it registers through `app.get`, `fileRouter` or anything else.
 
 #### Want the tag in the head instead? Use a stream
 
@@ -890,7 +1540,7 @@ appended to the live document's `<head>` — see *Where the tag lands* under
 same script backs several fragments and you would rather not re-send the tag
 with each one, or the moment a response needs to touch more than one place.
 
-Otherwise stay with `defineEndpoint`. Its tag riding along in the fragment is
+Otherwise stay with `defineRoute`. Its tag riding along in the fragment is
 the feature, not a compromise: the markup is self-contained, and it is a plain
 `text/html` response that anything can consume.
 
@@ -900,15 +1550,88 @@ At **registration**, not per request, and `fileRouter` registers through the sam
 `app.on` as everything else. So file routes, `app.get` and `app.notFound` all get
 layouts without any of them knowing that layouts exist. Consequences:
 
-- **A handler that is not a page or an endpoint is never touched.**
-  `c.html('<h1>hi</h1>')` returns exactly that, and so does a `c.json`. Only
-  what `definePage` and `defineEndpoint` render is rewritten.
+- **A handler that is not a `defineRoute` is never touched.**
+  A `c.body(…)` returns exactly what it was given. Only markup that a
+  `defineRoute` rendered is rewritten — text or data it returned is not.
 - **A page with no layout serves its fragment**, unwrapped. The same page is
   reusable across apps that wrap it differently. It still collects its
   `injectHTML` markup, appended — a layout-less page and an endpoint behave the
   same way here, which is what keeps `useScript` from silently doing nothing.
-- **A thrown error does not reach the layout.** `onError` produces that response,
-  and it is not a page.
+- **A thrown error reaches the layout only through `defineErrorPage`.** A plain
+  `onError` handler builds its own response and is left alone — see *Error pages*
+  below.
+
+### Error pages and 404s
+
+They are different hooks, and the difference catches people out: a URL that
+matches no route **does not throw**, so `onError` never sees it. `notFound` is
+the one you want for a 404, and it runs a `defineRoute` through the layout like
+any other route:
+
+```ts
+// not-found.ts
+export default defineRoute(c => {
+  c.status(404)
+
+  return html`<h1>Nothing here</h1>`
+})
+```
+
+```ts
+app.notFound(NotFound)
+```
+
+Set the status yourself: `defineRoute` builds the response, which answers 200
+unless the page says otherwise.
+
+`onError` is for a handler or middleware that actually threw. `defineErrorPage`
+is its page form, and it takes **the error first**:
+
+```ts
+// error.ts
+export default defineErrorPage((error, c) => {
+  c.set('title', 'Something went wrong')
+
+  return html`<p>${error instanceof Error ? error.message : String(error)}</p>`
+})
+```
+
+```ts
+app.onError(ErrorPage)
+```
+
+Three things it does that a plain handler does not:
+
+- **It is wrapped in the layout** and collects `injectHTML` markup, so an error
+  page looks like the rest of the site.
+- **It keeps a status the failing handler chose.** `c.status(401)` followed by
+  a throw still answers 401; only an untouched default becomes a 500. So a
+  handler can reject by setting a status and throwing, and the page can read it
+  back with `c.status()`:
+
+  ```ts
+  export const GET = defineRoute(c => {
+    c.status(401)
+
+    throw new Error('not signed in')
+  })
+  ```
+
+  ```ts
+  export default defineErrorPage((error, c) => html`<h1>${String(c.status())}</h1>`)
+  ```
+
+  `c.status` inside the render still wins over both.
+- **It falls back to a plain 500 if it throws itself** — most likely from the
+  layout, which is exactly when a second throw would escape and lose the
+  response altogether.
+
+A plain `app.onError((error, c) => …)` is untouched by all of this: it builds its
+own response, so nothing is wrapped and no status is assumed.
+
+`html` escapes what you interpolate, so putting `error.message` on the page
+cannot inject markup. Whether to show it at all is a different question — an
+example can, a public app should not.
 
 ### On escaping
 
@@ -942,8 +1665,8 @@ the Minimum Common API has none. The plugin does only the portable half: path �
 pattern, ordering, and registration.
 
 ```ts
-import { createApp, fileRouter } from 'framework'
-import { nodeStore } from 'node-adapter'
+import { createApp, fileRouter } from '@erikt/framework'
+import { nodeStore } from '@erikt/framework-node'
 
 const app = createApp()
 const store = nodeStore(new URL('./', import.meta.url))
@@ -953,10 +1676,14 @@ app.plugin(fileRouter({ store, dir: 'routes' }))
 
 ```ts
 // routes/users/[id].ts
-import type { Context } from 'framework'
+import { defineRoute } from '@erikt/framework'
 
-export const GET = (c: Context) => c.json({ id: c.params.id })
-export const POST = (c: Context) => c.text('saved', 201)
+export const GET = defineRoute(c => ({ id: c.params.id }))
+export const POST = defineRoute(c => {
+  c.status(201)
+
+  return 'saved'
+})
 ```
 
 | Option | Default | |
@@ -994,7 +1721,7 @@ the store lists them in, and the result never depends on the filesystem.
 
 | Export | |
 | --- | --- |
-| `GET` `POST` `PUT` `PATCH` `DELETE` `OPTIONS` `HEAD` `ALL` | A handler for that method — a `definePage` is one, and gets the app's layout |
+| `GET` `POST` `PUT` `PATCH` `DELETE` `OPTIONS` `HEAD` `ALL` | A handler for that method — a `defineRoute` is one, and gets the app's layout |
 | `default` | A handler for **every** method. A method export in the same file wins over it |
 | `pattern` | Overrides the derived pattern — a `string` or `URLPatternInit`, escape hatch for a route the conventions cannot spell |
 | `use` | Middleware scoped to this route's pattern. It runs inside `compress`, like any middleware you register yourself |
@@ -1071,7 +1798,7 @@ cheapest correct store is one that ignores `ListOptions` and returns everything.
 The in-package store, for anywhere there is no directory to walk:
 
 ```ts
-import { fileRouter, staticStore } from 'framework'
+import { fileRouter, staticStore } from '@erikt/framework'
 
 const store = staticStore({
   'routes/index.ts': () => import('./routes/index.ts'),
@@ -1089,7 +1816,7 @@ Composes a store's listing with someone else's bytes. This is the Workers shape:
 the listing is baked, the bytes come from the assets binding.
 
 ```ts
-import { withRead } from 'framework'
+import { withRead } from '@erikt/framework'
 import { store as baked } from './generated-store.ts'
 
 const store = withRead(baked, async path => {
@@ -1106,8 +1833,8 @@ provides the **pure** half: entries in, TypeScript source out. Node, Deno or Bun
 runs it and writes the file; the bundled runtime imports the result.
 
 ```ts
-import { generateStore } from 'framework'
-import { nodeStore } from 'node-adapter'
+import { generateStore } from '@erikt/framework'
+import { nodeStore } from '@erikt/framework-node'
 import { writeFile } from 'node:fs/promises'
 
 const entries = await nodeStore('src').list({ prefix: 'routes/' })
@@ -1132,7 +1859,7 @@ commit and to diff.
 patterns, using the platform's [`URLPattern`][urlpattern] API.
 
 ```ts
-import { createRouter } from 'framework'
+import { createRouter } from '@erikt/framework'
 
 const router = createRouter([
   { name: 'home', pattern: '/' },

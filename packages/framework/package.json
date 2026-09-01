@@ -1,14 +1,41 @@
 {
-  "name": "framework",
-  "version": "0.0.0",
+  "name": "@erikt/framework",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erikthq/framework.git",
+    "directory": "packages/framework"
+  },
+  "homepage": "https://github.com/erikthq/framework#readme",
+  "bugs": "https://github.com/erikthq/framework/issues",
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./tsconfig.base.json": "./tsconfig.base.json",
+      "./tsconfig.browser.json": "./tsconfig.browser.json"
+    }
+  },
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./tsconfig.browser.json": "./tsconfig.browser.json"
   },
   "files": [
-    "src"
-  ]
+    "dist",
+    "src",
+    "tsconfig.base.json",
+    "tsconfig.browser.json"
+  ],
+  "scripts": {
+    "build": "pnpm dlx --package=typescript tsc -p tsconfig.build.json",
+    "prepack": "pnpm build"
+  }
 }

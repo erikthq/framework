@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // Deno publishes no types this repo can depend on, so the globals it uses are
+  // declared in source and framework's web-standards settings are already right.
+  // This file exists so a Deno app extends its adapter like any other.
+  "extends": "@erikt/framework/tsconfig.base.json"
+}

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "erikt-ui": {
+      "source": "erikthq/ui",
+      "sourceType": "github",
+      "skillPath": "packages/skill/SKILL.md",
+      "computedHash": "456832f7d73b6e220e4b96f7bbe8b9dc18564ed173bc80b060007fd8b2254b0f"
+    }
+  }
+}

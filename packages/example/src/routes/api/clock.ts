@@ -1,4 +1,4 @@
-import { defineStream, html } from "framework";
+import { defineStream, html } from "@erikt/framework";
 
 const TICK = 1000;
 

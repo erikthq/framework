@@ -1,0 +1,71 @@
+import { html, useScript } from '@erikt/framework'
+import type { Context } from '@erikt/framework'
+
+export const SchemeSwitch = (c: Context) => {
+  useScript(c, 'theme')
+
+  return html`
+    <fieldset role="group" aria-label="Colour scheme">
+      <label class="toggle square" aria-label="System" data-tooltip="bottom">
+        <input type="radio" name="theme" value="light dark" data-bind:theme />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1v-10"
+          />
+          <path d="M7 20h10" />
+          <path d="M9 16v4" />
+          <path d="M15 16v4" />
+        </svg>
+      </label>
+
+      <label class="toggle square" aria-label="Light" data-tooltip="bottom">
+        <input type="radio" name="theme" value="light" data-bind:theme />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" />
+          <path
+            d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"
+          />
+        </svg>
+      </label>
+
+      <label class="toggle square" aria-label="Dark" data-tooltip="bottom">
+        <input type="radio" name="theme" value="dark" data-bind:theme />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454l0 .008"
+          />
+        </svg>
+      </label>
+    </fieldset>
+  `
+}

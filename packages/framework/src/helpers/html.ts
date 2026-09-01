@@ -15,6 +15,13 @@ function escapeValue(value: unknown): string {
   return String(value).replace(/[&<>"']/g, (char) => HTML_ESCAPES[char] || "");
 }
 
+// The one thing that counts as markup. `html` returns a SafeString rather than
+// a primitive, which is both what stops a layout escaping the page it wraps and
+// how a route says "this is HTML" — see defineRoute.
+export function isSafeString(value: unknown): value is string {
+  return value instanceof SafeString;
+}
+
 export function html(
   strings: TemplateStringsArray,
   ...values: unknown[]

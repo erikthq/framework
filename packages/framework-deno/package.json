@@ -1,0 +1,42 @@
+{
+  "name": "@erikt/framework-deno",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erikthq/framework.git",
+    "directory": "packages/framework-deno"
+  },
+  "homepage": "https://github.com/erikthq/framework#readme",
+  "bugs": "https://github.com/erikthq/framework/issues",
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./tsconfig.base.json": "./tsconfig.base.json"
+    }
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./tsconfig.base.json": "./tsconfig.base.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "tsconfig.base.json"
+  ],
+  "scripts": {
+    "build": "pnpm dlx --package=typescript tsc -p tsconfig.build.json",
+    "typecheck": "pnpm dlx --package=typescript tsc",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@erikt/framework": "workspace:*"
+  }
+}

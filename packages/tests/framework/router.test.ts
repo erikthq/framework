@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createRouter } from 'framework'
+import { createRouter } from '@erikt/framework'
 
 test('matches a registered literal url', () => {
   const router = createRouter([{ name: 'about', pattern: 'https://example.com/about' }])

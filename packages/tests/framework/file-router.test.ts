@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { createApp, fileRouter, patternFromFilePath, staticStore } from 'framework'
-import type { Context, FileStore, RouteModule } from 'framework'
+import { createApp, defineRoute, fileRouter, patternFromFilePath, staticStore } from '@erikt/framework'
+import type { Context, FileStore, RouteModule } from '@erikt/framework'
 
 // The framework enables banner, compress and logger by default. Unit tests opt
 // out so each one measures only what it registers itself.
@@ -28,46 +28,46 @@ const text = async (path: string, modules: Record<string, RouteModule>) => {
 }
 
 test('an index file serves the root', async () => {
-  assert.equal(await text('/', { 'index.ts': { GET: c => c.text('home') } }), '200 home')
+  assert.equal(await text('/', { 'index.ts': { GET: defineRoute(() => 'home') } }), '200 home')
 })
 
 test('a named file serves its own path', async () => {
-  assert.equal(await text('/about', { 'about.ts': { GET: c => c.text('about') } }), '200 about')
+  assert.equal(await text('/about', { 'about.ts': { GET: defineRoute(() => 'about') } }), '200 about')
 })
 
 test('a directory index file serves the directory path', async () => {
-  const modules = { 'blog/index.ts': { GET: (c: Context) => c.text('blog') } }
+  const modules = { 'blog/index.ts': { GET: defineRoute(() => 'blog') } }
 
   assert.equal(await text('/blog', modules), '200 blog')
 })
 
 test('a bracket segment becomes a named parameter', async () => {
-  const modules = { 'users/[id].ts': { GET: (c: Context) => c.text(`user ${c.params.id}`) } }
+  const modules = { 'users/[id].ts': { GET: defineRoute(c => `user ${c.params.id}`) } }
 
   assert.equal(await text('/users/7', modules), '200 user 7')
 })
 
 test('a catch-all segment captures the rest of the path', async () => {
-  const modules = { 'files/[...rest].ts': { GET: (c: Context) => c.text(`${c.params.rest}`) } }
+  const modules = { 'files/[...rest].ts': { GET: defineRoute(c => `${c.params.rest}`) } }
 
   assert.equal(await text('/files/a/b/c', modules), '200 a/b/c')
 })
 
 test('a catch-all segment also matches the directory itself', async () => {
-  const modules = { 'files/[...rest].ts': { GET: (c: Context) => c.text(`${c.params.rest}`) } }
+  const modules = { 'files/[...rest].ts': { GET: defineRoute(c => `${c.params.rest}`) } }
 
   assert.equal(await text('/files', modules), '200 undefined')
 })
 
 test('a doubled bracket segment is optional', async () => {
-  const modules = { 'posts/[[page]].ts': { GET: (c: Context) => c.text(`${c.params.page}`) } }
+  const modules = { 'posts/[[page]].ts': { GET: defineRoute(c => `${c.params.page}`) } }
 
   assert.equal(await text('/posts', modules), '200 undefined')
   assert.equal(await text('/posts/2', modules), '200 2')
 })
 
 test('a parenthesised directory does not appear in the path', async () => {
-  const modules = { '(marketing)/pricing.ts': { GET: (c: Context) => c.text('pricing') } }
+  const modules = { '(marketing)/pricing.ts': { GET: defineRoute(() => 'pricing') } }
 
   assert.equal(await text('/pricing', modules), '200 pricing')
   assert.equal(await text('/(marketing)/pricing', modules), '404 404 Not Found')
@@ -75,8 +75,8 @@ test('a parenthesised directory does not appear in the path', async () => {
 
 test('files and directories prefixed with an underscore are not routed', async () => {
   const modules = {
-    '_helper.ts': { GET: (c: Context) => c.text('helper') },
-    '_lib/thing.ts': { GET: (c: Context) => c.text('thing') },
+    '_helper.ts': { GET: defineRoute(() => 'helper') },
+    '_lib/thing.ts': { GET: defineRoute(() => 'thing') },
   }
 
   assert.equal(await text('/_helper', modules), '404 404 Not Found')
@@ -87,8 +87,12 @@ test('files and directories prefixed with an underscore are not routed', async (
 test('method exports route by method', async () => {
   const modules = {
     'items/index.ts': {
-      GET: (c: Context) => c.text('list'),
-      POST: (c: Context) => c.text('created', 201),
+      GET: defineRoute(() => 'list'),
+      POST: defineRoute(c => {
+        c.status(201)
+
+        return 'created'
+      }),
     },
   }
   const app = mount(modules)
@@ -99,7 +103,7 @@ test('method exports route by method', async () => {
 })
 
 test('a default export answers every method', async () => {
-  const modules = { 'ping.ts': { default: (c: Context) => c.text(c.req.method) } }
+  const modules = { 'ping.ts': { default: defineRoute(c => c.req.method) } }
   const app = mount(modules)
 
   assert.equal(await (await app.fetch(get('/ping'))).text(), 'GET')
@@ -109,8 +113,8 @@ test('a default export answers every method', async () => {
 test('a method export wins over the default export in the same file', async () => {
   const modules = {
     'ping.ts': {
-      default: (c: Context) => c.text('any'),
-      POST: (c: Context) => c.text('posted'),
+      default: defineRoute(() => 'any'),
+      POST: defineRoute(() => 'posted'),
     },
   }
   const app = mount(modules)
@@ -121,8 +125,8 @@ test('a method export wins over the default export in the same file', async () =
 
 test('a static path beats a parameter whatever order the source lists them in', async () => {
   const modules = {
-    'users/[id].ts': { GET: (c: Context) => c.text('param') },
-    'users/me.ts': { GET: (c: Context) => c.text('me') },
+    'users/[id].ts': { GET: defineRoute(() => 'param') },
+    'users/me.ts': { GET: defineRoute(() => 'me') },
   }
 
   assert.equal(await text('/users/me', modules), '200 me')
@@ -131,8 +135,8 @@ test('a static path beats a parameter whatever order the source lists them in', 
 
 test('a parameter beats an optional parameter at the same depth', async () => {
   const modules = {
-    'posts/[[page]].ts': { GET: (c: Context) => c.text('optional') },
-    'posts/[id].ts': { GET: (c: Context) => c.text('param') },
+    'posts/[[page]].ts': { GET: defineRoute(() => 'optional') },
+    'posts/[id].ts': { GET: defineRoute(() => 'param') },
   }
 
   assert.equal(await text('/posts/7', modules), '200 param')
@@ -141,9 +145,9 @@ test('a parameter beats an optional parameter at the same depth', async () => {
 
 test('a catch-all is the last resort', async () => {
   const modules = {
-    'files/[...rest].ts': { GET: (c: Context) => c.text('catch-all') },
-    'files/logo.png.ts': { GET: (c: Context) => c.text('logo') },
-    'files/[name]/raw.ts': { GET: (c: Context) => c.text('raw') },
+    'files/[...rest].ts': { GET: defineRoute(() => 'catch-all') },
+    'files/logo.png.ts': { GET: defineRoute(() => 'logo') },
+    'files/[name]/raw.ts': { GET: defineRoute(() => 'raw') },
   }
 
   assert.equal(await text('/files/logo.png', modules), '200 logo')
@@ -153,7 +157,7 @@ test('a catch-all is the last resort', async () => {
 
 test('a pattern export overrides the path convention', async () => {
   const modules = {
-    'legacy.ts': { pattern: '/v1/legacy/:id', GET: (c: Context) => c.text(`${c.params.id}`) },
+    'legacy.ts': { pattern: '/v1/legacy/:id', GET: defineRoute(c => `${c.params.id}`) },
   }
 
   assert.equal(await text('/v1/legacy/9', modules), '200 9')
@@ -170,9 +174,9 @@ test('a use export scopes middleware to the route', async () => {
 
         return response
       },
-      GET: (c: Context) => c.text('ok'),
+      GET: defineRoute(() => 'ok'),
     },
-    'open.ts': { GET: (c: Context) => c.text('ok') },
+    'open.ts': { GET: defineRoute(() => 'ok') },
   }
   const app = mount(modules)
 
@@ -182,8 +186,8 @@ test('a use export scopes middleware to the route', async () => {
 
 test('the routes it registers are reported by the app', async () => {
   const app = mount({
-    'index.ts': { GET: (c: Context) => c.text('home') },
-    'users/[id].ts': { GET: (c: Context) => c.text('user'), POST: (c: Context) => c.text('saved') },
+    'index.ts': { GET: defineRoute(() => 'home') },
+    'users/[id].ts': { GET: defineRoute(() => 'user'), POST: defineRoute(() => 'saved') },
   })
 
   await app.start()
@@ -197,8 +201,8 @@ test('the routes it registers are reported by the app', async () => {
 
 test('two files claiming the same method and path are rejected', async () => {
   const app = mount({
-    'about.ts': { GET: (c: Context) => c.text('a') },
-    'about/index.ts': { GET: (c: Context) => c.text('b') },
+    'about.ts': { GET: defineRoute(() => 'a') },
+    'about/index.ts': { GET: defineRoute(() => 'b') },
   })
 
   await assert.rejects(app.start(), /already registered/)
@@ -211,13 +215,13 @@ test('a route file that exports no handler is rejected', async () => {
 })
 
 test('a catch-all that is not the last segment is rejected', async () => {
-  const app = mount({ '[...rest]/edit.ts': { GET: (c: Context) => c.text('x') } })
+  const app = mount({ '[...rest]/edit.ts': { GET: defineRoute(() => 'x') } })
 
   await assert.rejects(app.start(), /catch-all segment that is not last/)
 })
 
 test('an unusable parameter name is rejected', async () => {
-  const app = mount({ 'users/[my-id].ts': { GET: (c: Context) => c.text('x') } })
+  const app = mount({ 'users/[my-id].ts': { GET: defineRoute(() => 'x') } })
 
   await assert.rejects(app.start(), /invalid parameter name/)
 })
@@ -237,9 +241,9 @@ test('paths map to patterns', () => {
 test('dir scopes the router to part of the store', async () => {
   const app = mount(
     {
-      'routes/index.ts': { GET: (c: Context) => c.text('home') },
-      'routes/about.ts': { GET: (c: Context) => c.text('about') },
-      'layouts/main.ts': { GET: (c: Context) => c.text('layout') },
+      'routes/index.ts': { GET: defineRoute(() => 'home') },
+      'routes/about.ts': { GET: defineRoute(() => 'about') },
+      'layouts/main.ts': { GET: defineRoute(() => 'layout') },
     },
     'routes',
   )
@@ -252,7 +256,7 @@ test('dir scopes the router to part of the store', async () => {
 
 test('a declaration file is not a route', async () => {
   const app = mount({
-    'index.ts': { GET: (c: Context) => c.text('home') },
+    'index.ts': { GET: defineRoute(() => 'home') },
     'types.d.ts': {},
   })
 
@@ -263,7 +267,7 @@ test('a declaration file is not a route', async () => {
 
 test('a file whose extension is not a module is ignored', async () => {
   const app = mount({
-    'index.ts': { GET: (c: Context) => c.text('home') },
+    'index.ts': { GET: defineRoute(() => 'home') },
     'notes.md': {},
   })
 

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // framework's settings, narrowed to Node: its own types supply fetch and the
+  // rest, so the DOM lib comes back off.
+  "extends": "@erikt/framework/tsconfig.base.json",
+
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"]
+  }
+}

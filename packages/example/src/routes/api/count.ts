@@ -1,9 +1,7 @@
-import { defineStream, html, readSignals } from "framework";
-
-type Counter = { count?: number };
+import { defineStream, html } from "@erikt/framework";
 
 export const POST = defineStream((stream, c) => {
-  const { count = 0 } = readSignals<Counter>(c);
+  const { count = 0 } = c.signals;
   const next = count + 1;
 
   stream.patchSignals({ count: next });

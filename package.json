@@ -8,8 +8,13 @@
     "pnpm": ">=10.0.0"
   },
   "scripts": {
+    "build": "pnpm --filter \"@erikt/*\" build",
     "dev": "pnpm --filter example dev",
     "test": "pnpm --filter tests test",
     "typecheck": "pnpm dlx --package=typescript tsc && pnpm -r typecheck"
+  },
+  "prettier": {
+    "semi": false,
+    "singleQuote": true
   }
 }

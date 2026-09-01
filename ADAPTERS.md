@@ -4,7 +4,7 @@
 on Node, Deno, Bun, Cloudflare Workers and in browsers. What it cannot do is bind
 a port or read a file — neither is in that API. An **adapter** supplies those.
 
-`packages/node-adapter` and `packages/deno-adapter` are the worked examples. Read
+`packages/framework-node` and `packages/framework-deno` are the worked examples. Read
 one alongside this document; both are small enough to read in full. Node is the
 one to copy if your runtime needs a request/response bridge, Deno if it hands you
 a `Request` already.
@@ -22,30 +22,57 @@ Workers-style runtimes need **no `serve` at all**: `export default app` is alrea
 the entry shape they expect, because `app.fetch` is the whole server. If your
 runtime is one of those, you are only writing a store.
 
-### Rule 1 — an adapter does not depend on `framework`
+### Rule 1 — the contract lives in `framework`; import it
 
-`packages/node-adapter` has no dependency on `framework`, and yours should not
-either. TypeScript is structural, so you declare the port's shape locally and any
-`framework` app will accept it:
+Every type an adapter implements is exported from `framework` as one schema,
+`src/adapter.ts`. Import it rather than redeclaring anything:
 
 ```ts
-export type FileStoreLike = {
-  name: string
-  list(options?: ListOptionsLike): Promise<readonly FileEntryLike[]>
-  read(path: string): Promise<Response | null>
-  import(path: string): Promise<unknown>
-}
+import type {
+  Adapter,        // the shape of your package's exports
+  AdapterConfig,  // SiteConfig + root, port, hostname, listen
+  CreateStore,    // the store factory's signature
+  DirectoryStore, // a FileStore whose read and import are guaranteed
+  FetchHandler,   // what serve accepts
+  Serve,          // serve's signature
+  ServeHandle,
+  ServeOptions,
+} from '@erikt/framework'
 ```
 
-Two reasons. An adapter's `serve` should host *any* WinterTC handler, not just
-this one — `node-adapter` is tested against a bare `{ fetch }` object. And the
-dependency graph stays one-way: `framework` defines ports, adapters fill them,
-nothing points back.
+This used to be two copies — `FileStoreLike`, `ServeHandle` and the rest were
+redeclared in each adapter to avoid a dependency on `framework`. That dependency
+now exists for the config layer, so the copies were only drift waiting to
+happen. One schema, one place to read what is required of you.
+
+Two things this does **not** change:
+
+- **`serve` still hosts any WinterTC handler.** `FetchHandler` is `fetch` plus
+  two optional hooks and nothing more, and each adapter is tested against a bare
+  `{ fetch }` object. Importing the type does not narrow what you accept.
+- **`serve.ts` and `store.ts` still carry no runtime dependency.** They use
+  `import type`, which is erased, so only `config.ts` imports a value from
+  `framework`. A bare server is still a bare server.
+
+Assert your conformance rather than hoping. `packages/tests` does it for both
+adapters, and a missing or renamed export fails `pnpm typecheck`:
+
+```ts
+import type { Adapter, CreateStore } from '@erikt/framework'
+import * as myAdapter from 'my-adapter'
+
+const adapter: Adapter = myAdapter
+const store: CreateStore = myAdapter.myStore
+```
+
+The store factory is the one part not named in `Adapter`: call it `myStore`, not
+`store`, because that is what reads well where it is used. It conforms by
+satisfying `CreateStore`.
 
 ### Rule 2 — prefer the web API even where the runtime's own is allowed
 
 Inside an adapter, `node:*` (or `Deno.*`, or `Bun.*`) is permitted — that is the
-point of the package. It is still not the default. `node-adapter` converts
+point of the package. It is still not the default. `@erikt/framework-node` converts
 streams with `new ReadableStream({ pull })` and `getReader()` rather than
 importing `node:stream`, and `FileStore.read` returns a `Response` rather than a
 runtime-specific file handle. Keep the runtime-specific surface as small as the
@@ -84,15 +111,15 @@ Types only, never a runtime dependency — the zero-dependency rule covers the
 whole repo. Swap `@types/node` for whatever your runtime publishes
 (`@cloudflare/workers-types`, `@types/bun`); if it publishes nothing usable,
 drop `devDependencies` entirely, declare the globals you use yourself and say so
-in the README. That is what `deno-adapter` does — `@types/deno` is unofficial and
+in the README. That is what `@erikt/framework-deno` does — `@types/deno` is unofficial and
 stale — and it costs about ten lines of `declare const`, split across the two
 modules that need them. Note that a `declare const` shadows the real global, so
 tsc cannot catch drift from it; a runtime test is what proves the declaration
 right.
 
-`tsconfig.json` is `packages/node-adapter/tsconfig.json` with `types` changed —
+`tsconfig.json` is `packages/framework-node/tsconfig.json` with `types` changed —
 or, with no types package at all, `"types": []` plus the `DOM` lib for the web
-types, which is `packages/deno-adapter/tsconfig.json`:
+types, which is `packages/framework-deno/tsconfig.json`:
 
 ```json
 {
@@ -213,7 +240,7 @@ Every store must agree on these, or stores are not interchangeable:
 `framework`'s `listFiles` enforces all of this and throws naming your store if
 you break it, so a violation shows up on the first test rather than in
 production. Derive relative paths through a URL rather than string-slicing native
-paths, which is how `node-adapter` gets `/` separators on Windows for free.
+paths, which is how `@erikt/framework-node` gets `/` separators on Windows for free.
 
 ### What a store must not do
 
@@ -254,8 +281,8 @@ of that:
 
 ```ts
 // scripts/bake.ts — run with Node, Deno or Bun before deploying
-import { generateStore } from 'framework'
-import { nodeStore } from 'node-adapter'
+import { generateStore } from '@erikt/framework'
+import { nodeStore } from '@erikt/framework-node'
 import { writeFile } from 'node:fs/promises'
 
 const entries = await nodeStore('src').list({ prefix: 'routes/' })
@@ -268,17 +295,87 @@ without timestamps, so it is stable enough to commit. Your adapter's job is only
 to graft the platform's bytes onto it with `withRead`. There may be nothing left
 to write.
 
+## The config layer — `defineConfig` and `start`
+
+Once both ports exist, give them a front door. A user should not have to build a
+store, call `createSite` and then `serve` by hand:
+
+```ts
+// src/config.ts
+import { createSite as createPortableSite } from '@erikt/framework'
+import type { AdapterConfig, App, ServeHandle, ServeOptions } from '@erikt/framework'
+
+import { serve } from './serve.ts'
+import { myStore } from './store.ts'
+
+// AdapterConfig is SiteConfig plus root, port, hostname and listen. Alias it
+// rather than restating it, and widen it only if your runtime needs more.
+export type MySiteConfig = AdapterConfig
+
+export function defineConfig(config: MySiteConfig = {}): MySiteConfig {
+  // The config file is the entry point, so this is where the server starts.
+  if (config.listen !== false) {
+    void start(config).catch((error: unknown) => {
+      console.error(error)
+    })
+  }
+
+  return config
+}
+
+export function createSite(config: MySiteConfig = {}): App {
+  const store = config.store ?? (config.root === undefined ? undefined : myStore(config.root))
+
+  return createPortableSite({ ...config, ...(store === undefined ? {} : { store }) })
+}
+
+export async function start(
+  config: MySiteConfig = {},
+  options: ServeOptions = {},
+): Promise<ServeHandle> {
+  const port = options.port ?? config.port
+  const hostname = options.hostname ?? config.hostname
+
+  return serve(createSite(config), {
+    ...(port === undefined ? {} : { port }),
+    ...(hostname === undefined ? {} : { hostname }),
+  })
+}
+```
+
+Three things about that shape, all of them the point:
+
+- **`root`, `port` and `hostname` live here, not in `framework`.** Turning a
+  directory into a store, and binding a port, are the two things the portable
+  half cannot do — so they are the two things your config adds. A serverless
+  config has no `port` on its type at all, rather than one that does nothing.
+- **Export `defineConfig` under that exact name, and start the server from it.**
+  A user's whole setup is then one file — `import { defineConfig } from
+  'your-adapter'`, `export default defineConfig({ … })` — run directly. Do not
+  make them call `start` themselves; that is a second file that exists only to
+  call a function.
+- **Honour `listen: false`.** Calling `defineConfig` must be safe in a test,
+  which means there has to be a way to get the config back without binding a
+  port. Without it every test that touches a config takes port 3000.
+- **Take the port from the config**, not from the environment. The user writes
+  `port: Number(process.env.PORT ?? 3000)`, which keeps the reading explicit and
+  in one place — and on a runtime where reading the environment needs a
+  permission, does not make your adapter demand one.
+
+A runtime that cannot enumerate a directory should omit `root` and take `store`
+alone, built with `staticStore` and `withRead`.
+
 ## Cookbook
 
 **These are sketches, not tested code**, with one exception: the Deno pair below
-grew into `packages/deno-adapter`, so read that instead of retyping this. Bun is
+grew into `packages/framework-deno`, so read that instead of retyping this. Bun is
 still not installed here, and nothing under *Bun*, *Cloudflare Workers* or
 *Vercel* has been run — the conformance checklist in the next section is how you
 find out whether yours works.
 
 ### Deno
 
-Shipped as `packages/deno-adapter`. What the real thing added to this sketch, all
+Shipped as `packages/framework-deno`. What the real thing added to this sketch, all
 of it found by running the checklist: `Deno.serve` also wants `onError`, or it
 prints the stack trace for a throwing handler; `server.addr.hostname` is `::1`
 when you asked for `localhost`, so the handle has to report back the hostname it
@@ -349,7 +446,7 @@ module scope**, so a store that reads through the assets binding has to be bound
 on the first request.
 
 ```ts
-import { createApp, fileRouter, withRead } from 'framework'
+import { createApp, fileRouter, withRead } from '@erikt/framework'
 import { store as baked } from './generated-store.ts'
 
 type Assets = { fetch(request: Request): Promise<Response> }
@@ -386,6 +483,45 @@ imports get dropped from the deployment. Either declare them
 sidesteps the problem entirely. **Edge functions** have no filesystem: bake it,
 like Workers.
 
+## Ship a tsconfig
+
+`framework` exports the settings it expects as `@erikt/framework/tsconfig.base.json`.
+Narrow it to your runtime and export the result, so an app extends one file and
+writes no compiler options at all:
+
+```json
+{
+  "extends": "@erikt/framework/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["my-runtime"]
+  }
+}
+```
+
+```json
+{
+  "name": "my-adapter",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tsconfig.base.json": "./tsconfig.base.json"
+  },
+  "files": ["src", "tsconfig.base.json"]
+}
+```
+
+Both the `exports` entry and the `files` entry matter: TypeScript resolves
+`extends` through `exports`, and without `files` the config is not published.
+
+**Put no `include` in it.** An inherited `include` resolves against the
+directory it was written in, so it would point every app that extends you at
+*your* source. Keep your own `include` in a separate `tsconfig.json` that
+extends your base — that is the file your `typecheck` script uses.
+
+Override only what your runtime changes. If it supplies its own `fetch` and
+`Request` types, drop the `DOM` lib and add your types; if it does not, inherit
+framework's as they are, which is what `@erikt/framework-deno` does.
+
 ## Testing your adapter
 
 All tests for the whole repo live in `packages/tests`, one directory per package
@@ -399,7 +535,7 @@ runtime cannot be imported into it. Running `deno test` or `bun test` from this
 repo would mean a second harness, which the testing rules currently forbid —
 **ask before adding one** rather than quietly introducing it.
 
-`packages/tests/deno-adapter/` shows the way around it that needs no permission:
+`packages/tests/framework-deno/` shows the way around it that needs no permission:
 the Node test **spawns the other runtime as a subprocess** and asserts from
 outside. `server.ts` and `bare.ts` start the adapter's `serve` on `port: 0` and
 print `url=…`; the Node test reads that line and runs the whole HTTP suite
@@ -411,7 +547,7 @@ run them, and every test carries
 `{ skip: denoInstalled ? false : 'deno is not installed' }` so the suite still
 passes on a machine without the runtime.
 
-Copy these behaviours from `packages/tests/node-adapter/`; they are the
+Copy these behaviours from `packages/tests/framework-node/`; they are the
 conformance suite in all but name.
 
 `serve.test.ts`:

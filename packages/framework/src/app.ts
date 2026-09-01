@@ -1,9 +1,9 @@
 import { createContext } from './context.ts'
+import { headMarkup, importMap } from './head.ts'
 import type { Context } from './context.ts'
 import { compress } from './middleware/compress.ts'
 import type { CompressOptions } from './middleware/compress.ts'
-import { insertMarkup, withMarkup } from './page.ts'
-import type { Layout } from './page.ts'
+import { insertMarkup, withErrorMarkup, withMarkup } from './page.ts'
 import { describePattern, detectRuntime } from './plugin.ts'
 import type { InjectTarget, Plugin, RouteInfo, StartInfo } from './plugin.ts'
 import { banner } from './plugins/banner.ts'
@@ -40,7 +40,6 @@ export type AppOptions = {
   compress?: boolean | CompressOptions
   datastar?: boolean | DatastarOptions
   logger?: boolean | LoggerOptions
-  layout?: Layout
 }
 
 export type App = {
@@ -81,7 +80,6 @@ function methodMatches(entry: Method, method: string): boolean {
 
 export function createApp(options: AppOptions = {}): App {
   const base = options.base ?? DEFAULT_BASE
-  const { layout } = options
   const routes: { pattern: RoutePattern; data: RouteEntry }[] = []
   const middlewares: { pattern: RoutePattern; data: MiddlewareEntry }[] = []
 
@@ -91,7 +89,8 @@ export function createApp(options: AppOptions = {}): App {
   let routeRouter: Router<RouteEntry> | null = null
   let middlewareRouter: Router<MiddlewareEntry> | null = null
 
-  let handleNotFound: Handler = c => c.text('404 Not Found', 404)
+  let handleNotFound: Handler = c =>
+    c.body('404 Not Found', { status: 404, type: 'text/plain; charset=utf-8' })
   let handleError: ErrorHandler = () => new Response('500 Internal Server Error', { status: 500 })
 
   function routeInfo(): RouteInfo[] {
@@ -101,7 +100,7 @@ export function createApp(options: AppOptions = {}): App {
     }))
   }
 
-  // Only ever reached through withLayout, so a route that serves no layout
+  // Only ever reached through withMarkup, so a route that renders no markup
   // never pays for the loop and never has its response rewritten.
   async function injectHTML(html: string, c: Context, target: InjectTarget): Promise<string> {
     let head = ''
@@ -116,7 +115,13 @@ export function createApp(options: AppOptions = {}): App {
       body += injection.body ?? ''
     }
 
-    return insertMarkup(html, head, body)
+    // The import map first of all — a browser ignores one that arrives after
+    // module loading has begun — then plugin injections, so a runtime lands
+    // ahead of the assets a page asked for with useScript or useStyle. A
+    // fragment gets no map: it is patched into a document that already has one.
+    const map = target === 'document' ? importMap(c) : ''
+
+    return insertMarkup(html, map + head + headMarkup(c), body)
   }
 
   function start(info: Partial<StartInfo> = {}): Promise<StartInfo> {
@@ -161,7 +166,7 @@ export function createApp(options: AppOptions = {}): App {
     },
 
     on(method, pattern, handler) {
-      routes.push({ pattern, data: { method, handler: withMarkup(handler, layout, injectHTML) } })
+      routes.push({ pattern, data: { method, handler: withMarkup(handler, injectHTML) } })
       routeRouter = null
 
       return app
@@ -206,13 +211,13 @@ export function createApp(options: AppOptions = {}): App {
     },
 
     notFound(handler) {
-      handleNotFound = withMarkup(handler, layout, injectHTML)
+      handleNotFound = withMarkup(handler, injectHTML)
 
       return app
     },
 
     onError(handler) {
-      handleError = handler
+      handleError = withErrorMarkup(handler, injectHTML)
 
       return app
     },
@@ -241,6 +246,10 @@ export function createApp(options: AppOptions = {}): App {
 
       const c = createContext(request, url, matched?.params ?? {})
 
+      // The app is its own fetch handler, so a handler can re-enter it to
+      // render another route — which is what patchPage is built on.
+      c.set('app:fetch', app.fetch)
+
       const chain = middlewareRouter.matchAll(url).map(match => match.route.data.middleware)
 
       async function terminal(): Promise<Response> {
@@ -251,8 +260,9 @@ export function createApp(options: AppOptions = {}): App {
             .filter(entry => entry !== 'ALL')
             .join(', ')
 
-          return c.text('405 Method Not Allowed', {
+          return c.body('405 Method Not Allowed', {
             status: 405,
+            type: 'text/plain; charset=utf-8',
             headers: allowed === '' ? {} : { allow: allowed },
           })
         }

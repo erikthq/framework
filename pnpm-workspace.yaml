@@ -1,2 +1,5 @@
 packages:
   - 'packages/*'
+  # The starter that `pnpm create` copies. A workspace package too, so it can be
+  # run and typechecked here rather than only after someone scaffolds it.
+  - 'packages/create-framework/template'

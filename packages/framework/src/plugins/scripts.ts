@@ -1,7 +1,9 @@
 import type { Context } from '../context.ts'
 import { listFiles, normalizePrefix } from '../file-store.ts'
+import { appendHead, appendImport, assetId, headIds } from '../head.ts'
 import type { FileStore } from '../file-store.ts'
 import { html } from '../helpers/html.ts'
+import { HTML_CLIENT } from '../helpers/html-client.ts'
 import { stripTypes } from '../helpers/strip-types.ts'
 import type { Plugin } from '../plugin.ts'
 
@@ -35,8 +37,11 @@ const RESERVED = /[:*?+{}()\\]/g
 const IMMUTABLE = 'public, max-age=31536000, immutable'
 
 const REGISTRY = 'scripts:registry'
-const USED = 'scripts:used'
-const TAKEN = 'scripts:taken'
+
+const BASE = 'scripts:base'
+
+// Served outside `base` so it can never collide with a file of the app's own.
+const HTML_SPECIFIER = '@erikt/framework/html'
 
 function stripExtension(path: string): string {
   const dot = path.lastIndexOf('.')
@@ -54,59 +59,39 @@ async function digest(code: string): Promise<string> {
 }
 
 function scriptTag(url: string): string {
-  return String(html`<script type="module" src="${url}"></script>`)
-}
-
-// Streams need what is new since they last looked, and a Set keeps insertion
-// order, so a count of what has already gone out is the whole bookmark.
-export function takeScriptTags(c: Context): readonly string[] {
-  const used = c.get(USED)
-
-  if (used === undefined) return []
-
-  const taken = c.get(TAKEN) ?? 0
-
-  if (used.size <= taken) return []
-
-  c.set(TAKEN, used.size)
-
-  return [...used].slice(taken).map(scriptTag)
-}
-
-function describe(registry: ReadonlyMap<string, string>): string {
-  const names = [...registry.keys()]
-
-  return names.length === 0
-    ? 'no scripts were found'
-    : `known scripts are ${names.map(name => JSON.stringify(name)).join(', ')}`
+  return String(
+    html`<script type="module" id="${assetId(url)}" src="${url}"></script>`,
+  )
 }
 
 export function useScript(c: Context, ...names: readonly string[]): void {
   const registry = c.get(REGISTRY)
+  const base = c.get(BASE)
 
-  if (registry === undefined) {
+  // Both are set together, by the plugin's onRequest.
+  if (registry === undefined || base === undefined) {
     throw new TypeError(
       'useScript needs the scripts plugin — register it with app.plugin(scripts({ store }))',
     )
   }
 
-  let used = c.get(USED)
-
-  if (used === undefined) {
-    used = new Set<string>()
-
-    c.set(USED, used)
-  }
-
   for (const name of names) {
     const requested = name.replace(/^\.?\//, '')
-    const url = registry.get(requested) ?? registry.get(stripExtension(requested))
 
-    if (url === undefined) {
-      throw new TypeError(`No script named ${JSON.stringify(name)} — ${describe(registry)}`)
-    }
+    // A name with no file still gets its tag, pointing at a URL nothing serves.
+    // The page renders and the browser reports one 404, for the file it names.
+    //
+    // This used to throw, on the grounds that a typo should fail where it was
+    // written. It took the whole page down over a deleted or misspelt asset,
+    // which is the wrong trade: a page whose script is missing is still a page,
+    // and the 404 says which file it was. Unhashed on purpose — every served
+    // asset carries a content hash, so this URL cannot collide with one.
+    const url =
+      registry.get(requested) ??
+      registry.get(stripExtension(requested)) ??
+      `${base}${stripExtension(requested)}.js`
 
-    used.add(url)
+    appendHead(c, assetId(url), scriptTag(url))
   }
 }
 
@@ -117,7 +102,10 @@ export function scripts(options: ScriptsOptions): Plugin {
   const extensions = options.extensions ?? DEFAULT_EXTENSIONS
 
   const byName = new Map<string, string>()
-  const own = new Set<string>()
+  // Asset ids whose code imports the helper, so the map is claimed only for
+  // a page that actually loads one of them.
+  const importsHtml = new Set<string>()
+  let htmlUrl = ''
 
   return {
     name: 'scripts',
@@ -154,9 +142,23 @@ export function scripts(options: ScriptsOptions): Plugin {
         assets.push({ path: file.path, name, url: `${base}${name}.${await digest(code)}.js`, code })
       }
 
+      // The same html`` a route is written with, for browser code to import.
+      // Its source is derived from helpers/html.ts, never hand-written.
+      htmlUrl = `/framework/html.${await digest(HTML_CLIENT)}.js`
+
+      app.get(htmlUrl, c =>
+        c.body(HTML_CLIENT, {
+          headers: {
+            'content-type': 'text/javascript; charset=utf-8',
+            'cache-control': IMMUTABLE,
+          },
+        }),
+      )
+
       for (const asset of assets) {
         byName.set(asset.name, asset.url)
-        own.add(asset.url)
+
+        if (asset.code.includes(HTML_SPECIFIER)) importsHtml.add(assetId(asset.url))
 
         // The URL is a literal, so anything URLPattern would read as syntax has
         // to be escaped — the pattern and the src then differ by backslashes.
@@ -176,24 +178,20 @@ export function scripts(options: ScriptsOptions): Plugin {
     // a typo throws where it was written. Handing it the map costs one bag
     // write per request; the merge only allocates when a second scripts plugin
     // is registered.
+    // Nothing is injected here; this is only where the import map entry is
+    // claimed, and only when a script the page asked for actually imports the
+    // helper. A page that loads no browser code gets no map at all.
+    injectHTML(c) {
+      if (headIds(c).some(id => importsHtml.has(id))) {
+        appendImport(c, HTML_SPECIFIER, htmlUrl)
+      }
+    },
+
     onRequest(c) {
       const existing = c.get(REGISTRY)
 
       c.set(REGISTRY, existing === undefined ? byName : new Map([...existing, ...byName]))
-    },
-
-    injectHTML(c) {
-      const used = c.get(USED)
-
-      if (used === undefined) return
-
-      // Filtered to this plugin's own assets, so two scripts plugins emit their
-      // own tags rather than both emitting everything.
-      const head = [...used].filter(url => own.has(url)).map(scriptTag).join('')
-
-      if (head === '') return
-
-      return { head }
+      c.set(BASE, base)
     },
   }
 }

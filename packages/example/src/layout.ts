@@ -1,4 +1,4 @@
-import { defineLayout, html } from "framework";
+import { defineLayout, html } from "@erikt/framework";
 
 export const layout = defineLayout(
   (content, c) =>
@@ -8,12 +8,14 @@ export const layout = defineLayout(
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>${c.get("title") ?? "framework"}</title>
+          <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
           <link rel="stylesheet" href="https://esm.sh/@erikt/ui" />
           <style>
             body {
               max-width: 40rem;
               margin: 4rem auto;
               padding: 0 1rem;
+              container-type: inline-size;
             }
 
             pre {
@@ -22,7 +24,7 @@ export const layout = defineLayout(
               overflow-x: auto;
             }
 
-            section {
+            section + section {
               border-top: 1px solid #d4d4d8;
               margin-top: 2rem;
             }
@@ -36,6 +38,16 @@ export const layout = defineLayout(
         </head>
         <body>
           ${content}
+
+          <footer>
+            <p>
+              Server-rendered at
+              <time>${new Date().toISOString().slice(11, 19)}</time> —
+              <button data-on:click="@get('/api/refresh')">
+                Refresh this page
+              </button>
+            </p>
+          </footer>
         </body>
       </html>`,
 );

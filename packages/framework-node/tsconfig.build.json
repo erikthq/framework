@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // Publishing is the one place this repo compiles. Node refuses to strip types
+  // from anything under node_modules, so what ships has to be JavaScript even
+  // though what runs here is the source. `prepack` builds; nothing else does.
+  "extends": "./tsconfig.json",
+
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    // Turns the `./serve.ts` specifiers the source is written with into
+    // `./serve.js` on the way out, so the emitted JavaScript resolves.
+    "rewriteRelativeImportExtensions": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+
+  "include": ["src/**/*.ts"]
+}

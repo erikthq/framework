@@ -1,11 +1,37 @@
 import type { Handler } from '../app.ts'
 import type { Context } from '../context.ts'
+import { appendImport, headIds, takeHeadMarkup } from '../head.ts'
 import { html } from '../helpers/html.ts'
 import type { Plugin } from '../plugin.ts'
 import { DATASTAR_CLIENT, DATASTAR_VERSION } from './datastar-client.ts'
-import { takeScriptTags } from './scripts.ts'
 
-export type Signals = Record<string, unknown>
+
+// Declaration-merged, so an app names the signals it uses once and c.signals is
+// typed:
+//
+//   declare module '@erikt/framework' {
+//     interface Signals {
+//       count: number
+//     }
+//   }
+//
+// Anything undeclared still reads back as `unknown` rather than erroring.
+export interface Signals {
+  // The framework's own, declared here so it shows as taken rather than
+  // colliding with one of yours. Optional like any other: the browser decides
+  // what it actually sends.
+  headAssets?: Record<string, boolean>
+}
+
+export type ContextSignals = Signals & Record<string, unknown>
+
+// This plugin owns c.signals, so it is this plugin that puts it on the context
+// type. Core has no idea what a signal is.
+declare module '../context.ts' {
+  interface Context {
+    readonly signals: ContextSignals
+  }
+}
 
 export type PatchMode =
   | 'outer'
@@ -34,6 +60,7 @@ export type DatastarStream = {
   patchElements(elements: string, options?: PatchElementsOptions): void
   patchSignals(signals: unknown, options?: PatchSignalsOptions): void
   removeElements(selector: string): void
+  patchPage(target?: string | URL): Promise<void>
   event(name: string, lines: readonly string[]): void
   close(): void
 }
@@ -48,7 +75,70 @@ export type DatastarOptions = {
 const PATCH_ELEMENTS = 'datastar-patch-elements'
 const PATCH_SIGNALS = 'datastar-patch-signals'
 
-const SIGNALS = 'datastar:signals'
+
+// The signal carrying which assets a document already holds. Datastar sends
+// every signal that does not start with `_` on every request, so a stream is
+// told what is on the page rather than having to ask the DOM — which cannot be
+// done in one patch without Datastar logging a miss.
+const ASSETS = 'headAssets'
+
+// Marks a render this plugin asked for, so a page that patches itself cannot
+// set off an unbounded chain of them.
+const RENDER = 'x-framework-render'
+
+// Dropped from an internal render because each one would answer with something
+// other than the page's markup: a compressed body that .text() cannot decode, a
+// partial one, a 304 with no body at all, or a Datastar fragment.
+const STRIP = [
+  'accept-encoding',
+  'range',
+  'if-none-match',
+  'if-modified-since',
+  'datastar-request',
+]
+
+async function renderPage(c: Context, target: string | URL | undefined): Promise<string> {
+  if (c.req.headers.get(RENDER) !== null) {
+    throw new Error('patchPage was called while rendering a page, which would not terminate')
+  }
+
+  const dispatch = c.get('app:fetch')
+
+  if (dispatch === undefined) {
+    throw new TypeError('patchPage needs a context the app created')
+  }
+
+  const from = target ?? c.req.headers.get('referer')
+
+  if (from === null || from === undefined) {
+    throw new TypeError(
+      'patchPage has no page to render: the request carried no Referer, so name a url',
+    )
+  }
+
+  const url = new URL(from, c.url)
+
+  if (url.origin !== c.url.origin) {
+    throw new TypeError(`patchPage will not render ${url.origin}, which is not this app`)
+  }
+
+  const headers = new Headers(c.req.headers)
+
+  for (const name of STRIP) headers.delete(name)
+
+  headers.set(RENDER, '1')
+
+  const response = await dispatch(new Request(url, { method: 'GET', headers }))
+  const type = response.headers.get('content-type') ?? ''
+
+  if (!type.includes('html')) {
+    throw new TypeError(
+      `patchPage rendered ${url.pathname} but got ${JSON.stringify(type)}, not html`,
+    )
+  }
+
+  return response.text()
+}
 
 const DEFAULT_PARAM = 'datastar'
 
@@ -86,20 +176,42 @@ export function defineStream(render: StreamRender): Handler {
     let open = true
     let controller: ReadableStreamDefaultController<string> | null = null
 
+    const held = new Set(Object.keys(c.signals[ASSETS] ?? {}))
+
     function write(name: string, lines: readonly string[]): void {
       if (!open || controller === null) return
 
       controller.enqueue(frame(name, lines))
     }
 
-    // A page puts a useScript tag in the layout's head; a stream has no
-    // document to render, so it appends the tag to the head of the one already
-    // on screen. Flushed after the event rather than before it, so a script
-    // lands once the markup it came with is in the DOM.
+    // A page splices its useScript and useStyle tags into the layout's head; a
+    // stream has no document to render, so it appends them to the head of the
+    // one already on screen. Flushed after the event rather than before it, so
+    // an asset lands once the markup it came with is in the DOM.
+    //
+    // Anything the page already carries is skipped, and what does go out is
+    // recorded back into the signal, so a second request for the same stream
+    // sends nothing. Uses `write`, not `send`, or the signal patch would
+    // re-enter this function.
     function flush(): void {
-      for (const tag of takeScriptTags(c)) {
-        write(PATCH_ELEMENTS, ['selector head', 'mode append', ...dataLines('elements', tag)])
+      const fresh = takeHeadMarkup(c).filter(entry => !held.has(entry.id))
+
+      if (fresh.length === 0) return
+
+      const added: Record<string, boolean> = {}
+
+      for (const entry of fresh) {
+        write(PATCH_ELEMENTS, [
+          'selector head',
+          'mode append',
+          ...dataLines('elements', entry.markup),
+        ])
+
+        held.add(entry.id)
+        added[entry.id] = true
       }
+
+      write(PATCH_SIGNALS, dataLines('signals', JSON.stringify({ [ASSETS]: added })))
     }
 
     function send(name: string, lines: readonly string[]): void {
@@ -138,6 +250,13 @@ export function defineStream(render: StreamRender): Handler {
 
       removeElements(selector) {
         send(PATCH_ELEMENTS, [`selector ${selector}`, 'mode remove'])
+      },
+
+      // Datastar parses markup containing </html> as a whole document and morphs
+      // it over documentElement, so no selector or mode is wanted here — the
+      // default outer morph is the one that does a soft reload.
+      async patchPage(target) {
+        send(PATCH_ELEMENTS, dataLines('elements', await renderPage(c, target)))
       },
 
       event(name, lines) {
@@ -188,14 +307,17 @@ export function defineStream(render: StreamRender): Handler {
   }
 }
 
-function parseSignals(raw: string | null): Signals {
+// Raw client input, so a plain record — never ContextSignals. An app may
+// declare a signal as required, and nothing here can promise the browser
+// actually sent it; only the c.signals getter asserts that shape.
+function parseSignals(raw: string | null): Record<string, unknown> {
   if (raw === null || raw === '') return {}
 
   try {
     const value: unknown = JSON.parse(raw)
 
     return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? (value as Signals)
+      ? (value as Record<string, unknown>)
       : {}
   } catch {
     // This hook runs on every request, including ones that were never meant for
@@ -204,7 +326,7 @@ function parseSignals(raw: string | null): Signals {
   }
 }
 
-async function requestSignals(c: Context, param: string): Promise<Signals> {
+async function requestSignals(c: Context, param: string): Promise<Record<string, unknown>> {
   const method = c.req.method.toUpperCase()
 
   if (method === 'GET' || method === 'HEAD') return parseSignals(c.url.searchParams.get(param))
@@ -218,10 +340,6 @@ async function requestSignals(c: Context, param: string): Promise<Signals> {
   } catch {
     return {}
   }
-}
-
-export function readSignals<T extends Signals = Signals>(c: Context): T {
-  return (c.get(SIGNALS) as T | undefined) ?? ({} as T)
 }
 
 export function datastar(options: DatastarOptions = {}): Plugin {
@@ -239,14 +357,42 @@ export function datastar(options: DatastarOptions = {}): Plugin {
 
     // Documents only. The runtime is a page-wide concern, and a fragment is
     // patched into a page that is already running it.
-    injectHTML(_c, target) {
-      if (!client || target === 'fragment') return
+    injectHTML(c, target) {
+      if (target === 'fragment') return
 
-      return { head: String(html`<script type="module" src="${CLIENT_URL}"></script>`) }
+      const parts: string[] = []
+
+      if (client) {
+        appendImport(c, 'datastar', CLIENT_URL)
+
+        parts.push(String(html`<script type="module" src="${CLIENT_URL}"></script>`))
+      }
+
+      // Tells the page which assets it already has, so a stream can skip them.
+      // Escaping is correct here: the browser decodes the entities before
+      // Datastar reads the attribute.
+      const ids = headIds(c)
+
+      if (ids.length > 0) {
+        const seed = JSON.stringify({ [ASSETS]: Object.fromEntries(ids.map(id => [id, true])) })
+
+        parts.push(String(html`<meta name="framework-head-assets" data-signals="${seed}" />`))
+      }
+
+      if (parts.length === 0) return
+
+      return { head: parts.join('') }
     },
 
     async onRequest(c) {
-      c.set(SIGNALS, await requestSignals(c, param))
+      // Parsed input is arbitrary, so nothing above can promise the browser sent
+      // a signal an app declared as required. This is the single point where
+      // that claim is made — which is why the README says to validate anything
+      // you are going to trust. The second cast is only because the property is
+      // readonly to everyone else.
+      const signals = (await requestSignals(c, param)) as ContextSignals
+
+      ;(c as { signals: ContextSignals }).signals = signals
     },
   }
 }

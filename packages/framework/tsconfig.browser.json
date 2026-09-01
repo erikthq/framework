@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // For code that runs in the browser rather than on the server: framework's
+  // web-standards settings, plus the types for what the import map resolves —
+  // the Datastar runtime, and the same html`` a route is written with.
+  "extends": "./tsconfig.base.json",
+
+  "compilerOptions": {
+    "paths": {
+      "datastar": ["./src/datastar-runtime.ts"],
+      "@erikt/framework/html": ["./src/helpers/html.ts"]
+    }
+  }
+}

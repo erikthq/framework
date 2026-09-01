@@ -1,3 +1,3 @@
-import type { Context } from 'framework'
+import { defineRoute } from '@erikt/framework'
 
-export default (c: Context) => c.text(`${c.req.method} ${c.params.rest}`)
+export default defineRoute(c => `${c.req.method} ${c.params.rest}`)

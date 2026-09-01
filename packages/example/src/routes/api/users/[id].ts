@@ -1,3 +1,6 @@
-import type { Context } from 'framework'
+import { defineRoute } from "@erikt/framework";
 
-export const GET = (c: Context) => c.json({ id: c.params.id, name: `user ${c.params.id}` })
+export const GET = defineRoute((c) => ({
+  id: c.params.id,
+  name: `user ${c.params.id}`,
+}));

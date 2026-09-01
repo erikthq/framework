@@ -7,13 +7,13 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "node --watch-path=./ src/main.ts",
-    "start": "node src/main.ts",
-    "typecheck": "pnpm dlx --package=typescript tsc && pnpm dlx --package=typescript tsc -p tsconfig.scripts.json"
+    "dev": "node --watch-path=. framework.config.ts",
+    "start": "node framework.config.ts",
+    "typecheck": "pnpm dlx --package=typescript tsc && pnpm dlx --package=typescript tsc -p src/scripts"
   },
   "dependencies": {
-    "framework": "workspace:*",
-    "node-adapter": "workspace:*"
+    "@erikt/framework": "workspace:*",
+    "@erikt/framework-node": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.4.0"

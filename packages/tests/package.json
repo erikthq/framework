@@ -11,9 +11,10 @@
     "typecheck": "pnpm dlx --package=typescript tsc"
   },
   "dependencies": {
-    "deno-adapter": "workspace:*",
-    "framework": "workspace:*",
-    "node-adapter": "workspace:*"
+    "@erikt/create-framework": "workspace:*",
+    "@erikt/framework": "workspace:*",
+    "@erikt/framework-deno": "workspace:*",
+    "@erikt/framework-node": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.4.0"

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // Named tsconfig.json, and living in the folder it covers, because that is
+  // the only config an editor loads on its own: it walks up from the file it is
+  // showing. A tsconfig.scripts.json at the package root typechecks from the
+  // CLI but leaves the editor guessing, which is how `import … from "datastar"`
+  // ends up underlined while `pnpm typecheck` is green.
+  "extends": "@erikt/framework/tsconfig.browser.json",
+
+  "include": ["**/*.ts"]
+}

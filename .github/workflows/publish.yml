@@ -1,0 +1,86 @@
+name: publish
+
+# A package.json edit is the trigger, but a *version* edit is the decision: the
+# job compares each version against the registry and publishes only what is not
+# there yet. So editing a description is a no-op, a re-run is a no-op, and a run
+# that half-failed can simply be run again.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/*/package.json'
+  workflow_dispatch:
+
+# Two pushes in quick succession would otherwise race for the same version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # What npm exchanges for a signed provenance attestation. Requires a
+      # public repository.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          # Writes the .npmrc that NODE_AUTH_TOKEN below feeds.
+          registry-url: https://registry.npmjs.org
+
+      # The deno adapter's suite skips itself when deno is missing, and a skipped
+      # test gates nothing. Install it so the gate is real.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm test
+
+      - name: Publish what the registry does not have
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Dependency order: a consumer resolves the adapters' pinned
+          # `@erikt/framework` range, so that one goes up first. Adding a
+          # publishable package means adding it here.
+          for dir in framework framework-node framework-deno create-framework; do
+            manifest="packages/$dir/package.json"
+            name=$(node -p "require('./$manifest').name")
+            version=$(node -p "require('./$manifest').version")
+
+            # Empty for a version that is not on the registry, and for a package
+            # that does not exist at all — both mean "publish it".
+            if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
+              echo "· $name@$version is already published"
+              continue
+            fi
+
+            echo "→ publishing $name@$version"
+
+            # Packed by pnpm, uploaded by npm, and it has to be that way round:
+            # only pnpm rewrites `workspace:*` to a real version, and only npm
+            # can attach provenance. The tarball carries pnpm's rewrites and its
+            # own publishConfig, so npm honours the public access from it.
+            # `pnpm pack` prints the tarball path as its last line, and does
+            # no git checks — only `pnpm publish` does, which is one reason not
+            # to use it here.
+            tarball=$(cd "packages/$dir" && pnpm pack --pack-destination "$RUNNER_TEMP" | tail -1)
+
+            npm publish "$tarball" --provenance
+          done

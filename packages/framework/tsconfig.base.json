@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // The settings this framework needs, for anyone to extend. Runtime-agnostic:
+  // web APIs only, no Node types. An adapter narrows it to its runtime; extend
+  // the adapter's, not this one, unless you are writing portable or browser code.
+  //
+  // Deliberately no "include" — an inherited one resolves against *this*
+  // directory, so it would point every extender at this package's source.
+  "compilerOptions": {
+    "target": "ES2023",
+
+    // "DOM" is the only dependency-free source of types for fetch,
+    // Request/Response, URL, Web Streams, TextEncoder and the rest. Its presence
+    // is not permission to use the rest of the DOM.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Node strips types, it does not compile them: no enum, no namespace, no
+    // parameter properties, and type-only imports must say so.
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true,
+
+    // There is no build step; relative imports carry the .ts extension.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

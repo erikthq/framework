@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // Named tsconfig.json and living in the folder it covers, because that is the
+  // only config an editor loads on its own. framework/tsconfig.browser.json is
+  // the web-standards flavour plus the types for the Datastar runtime.
+  "extends": "@erikt/framework/tsconfig.browser.json",
+
+  "include": ["**/*.ts"]
+}
