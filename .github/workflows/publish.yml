@@ -44,6 +44,34 @@ jobs:
         with:
           deno-version: v2.x
 
+      # The registry answers an unauthorised write with 404, not 403, so a bad or
+      # missing token surfaces as "package not found" *after* the tarball is
+      # built and provenance is signed. Fail here instead, where the cause is
+      # legible and nothing has been signed yet.
+      - name: Check the npm credential
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::The NPM_TOKEN secret is empty or not set on this repository."
+            exit 1
+          fi
+
+          if ! who=$(npm whoami 2>&1); then
+            echo "::error::NPM_TOKEN is not a valid npm credential: $who"
+            exit 1
+          fi
+
+          echo "authenticated as $who"
+
+          # Publishing a *new* package needs write on the scope itself. A
+          # granular token limited to hand-picked packages can update those and
+          # nothing else, which is the likeliest reason a first publish 404s.
+          if ! npm access list packages @erikt > /dev/null 2>&1; then
+            echo "::error::$who cannot read the @erikt scope — the token needs read/write on the scope, not on selected packages."
+            exit 1
+          fi
+
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm typecheck
